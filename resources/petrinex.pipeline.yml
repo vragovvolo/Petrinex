@@ -1,0 +1,14 @@
+# The main pipeline for petrinex
+resources:
+  pipelines:
+    petrinex_pipeline:
+      name: petrinex_pipeline
+      catalog: ah_demos
+      schema: petrinex_${bundle.target}
+      serverless: true
+      libraries:
+        - notebook:
+            path: ../src/dlt_pipeline.ipynb
+
+      configuration:
+        bundle.sourcePath: ${workspace.file_path}/src
