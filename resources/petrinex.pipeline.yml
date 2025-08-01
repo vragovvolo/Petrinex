@@ -3,12 +3,16 @@ resources:
   pipelines:
     petrinex_pipeline:
       name: petrinex_pipeline
-      catalog: ah_demos
+      catalog: shm
       schema: petrinex_${bundle.target}
       serverless: true
       libraries:
         - notebook:
-            path: ../src/dlt_pipeline.ipynb
+            path: ../01_ingest.ipynb
+        - notebook:
+            path: ../02_process.ipynb
+        - notebook:
+            path: ../03_forecast.ipynb
 
       configuration:
         bundle.sourcePath: ${workspace.file_path}/src

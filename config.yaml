@@ -1,0 +1,19 @@
+catalog: shm
+schema: petrinex
+ingest:
+  start_month_yyyy_mm: "2014-01"
+  end_month_yyyy_mm:
+  conventional_table_name: ConventionalVolumetric
+  ngl_table_name: NGLVolumetric
+process:
+  conventional_table_name: ConventionalVolumetric
+  ngl_table_name: NGLVolumetric
+  wells_table_name: Well
+forecast:
+  model:
+    name: petrinex
+    version: 1.0.0
+    type: petrinex
+    parameters:
+      - name: forecast_horizon
+        value: 12

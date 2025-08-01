@@ -5,33 +5,37 @@ resources:
       name: petrinex_job
 
       trigger:
-        # Run this job every day, exactly one day from the last run; see https://docs.databricks.com/api/workspace/jobs/create#trigger
         periodic:
+          # Run weekly to ensure we catch updates
           interval: 1
-          unit: DAYS
+          unit: WEEKS
 
-      #email_notifications:
-      #  on_failure:
-      #    - your_email@example.com
+      email_notifications:
+        on_failure:
+          - scott.mckean@databricks.com
 
       tasks:
-        - task_key: notebook_task
+        - task_key: ingest
           notebook_task:
-            notebook_path: ../src/notebook.ipynb
+            notebook_path: ../01_ingest.ipynb
 
         - task_key: refresh_pipeline
           depends_on:
-            - task_key: notebook_task
+            - task_key: ingest
           pipeline_task:
             pipeline_id: ${resources.pipelines.petrinex_pipeline.id}
 
-        - task_key: main_task
+        - task_key: process
           depends_on:
             - task_key: refresh_pipeline
-          environment_key: default
-          python_wheel_task:
-            package_name: petrinex
-            entry_point: main
+          notebook_task:
+            notebook_path: ../02_process.ipynb
+
+        - task_key: forecast
+          depends_on:
+            - task_key: process
+          notebook_task:
+            notebook_path: ../03_forecast.ipynb
 
       # A list of task execution environment specifications that can be referenced by tasks of this job.
       environments:

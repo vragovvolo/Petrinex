@@ -15,25 +15,14 @@ This repo contains code for the Petrinex project. It illustrates how to use decl
 
 3. To deploy a development copy of this project, type:
     ```
+    $ databricks bundle validate
     $ databricks bundle deploy --target dev
     ```
-    (Note that "dev" is the default target, so the `--target` parameter
-    is optional here.)
 
-    This deploys everything that's defined for this project.
-    For example, the default template would deploy a job called
-    `[dev yourname] petrinex_job` to your workspace.
-    You can find that job by opening your workpace and clicking on **Workflows**.
-
-4. Similarly, to deploy a production copy, type:
+4. To deploy a production copy, type:
    ```
    $ databricks bundle deploy --target prod
-   ```
-
-   Note that the default job from the template has a schedule that runs every day
-   (defined in resources/petrinex.job.yml). The schedule
-   is paused when deploying in development mode (see
-   https://docs.databricks.com/dev-tools/bundles/deployment-modes.html).
+   ``` 
 
 5. To run a job or pipeline, use the "run" command:
    ```
@@ -49,3 +38,16 @@ This repo contains code for the Petrinex project. It illustrates how to use decl
 7. For documentation on the Databricks asset bundles format used
    for this project, and for CI/CD configuration, see
    https://docs.databricks.com/dev-tools/bundles/index.html.
+
+
+## Notes
+
+- Make a 00_setup task, define UC functions and register
+- Join ingest & process, refactor to SQL? Trigger on each run (weekly / monthly)
+- Run forecast post ingest & process job?
+- Add expectations to declarative pipeline / tables as data quality solution
+
+
+## Testing
+
+- As this is mainly designed to run in Databricks, we use an actual spark connection to run any spark unit tests.
