@@ -1090,8 +1090,6 @@ dependencies = [
     { name = "databricks-connect" },
     { name = "databricks-dlt" },
     { name = "mlflow" },
-    { name = "pandas" },
-    { name = "pydantic" },
 ]
 
 [package.dev-dependencies]
@@ -1105,8 +1103,6 @@ requires-dist = [
     { name = "databricks-connect", specifier = "==16.3.2" },
     { name = "databricks-dlt" },
     { name = "mlflow", specifier = "==3.1.1" },
-    { name = "pandas", specifier = ">=2.3.0" },
-    { name = "pydantic", specifier = "==2.8.2" },
 ]
 
 [package.metadata.requires-dev]

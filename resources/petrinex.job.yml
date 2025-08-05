@@ -1,12 +1,10 @@
-# The main job for petrinex.
 resources:
   jobs:
     petrinex_job:
       name: petrinex_job
 
       trigger:
-        periodic:
-          # Run weekly to ensure we catch updates
+        periodic: # Run weekly to ensure we catch updates
           interval: 1
           unit: WEEKS
 
@@ -16,34 +14,13 @@ resources:
 
       tasks:
         - task_key: ingest
+          environment_key: default
           notebook_task:
-            notebook_path: ../01_ingest.ipynb
+            notebook_path: ../src/01_ingest.ipynb
 
-        - task_key: refresh_pipeline
-          depends_on:
-            - task_key: ingest
-          pipeline_task:
-            pipeline_id: ${resources.pipelines.petrinex_pipeline.id}
-
-        - task_key: process
-          depends_on:
-            - task_key: refresh_pipeline
-          notebook_task:
-            notebook_path: ../02_process.ipynb
-
-        - task_key: forecast
-          depends_on:
-            - task_key: process
-          notebook_task:
-            notebook_path: ../03_forecast.ipynb
-
-      # A list of task execution environment specifications that can be referenced by tasks of this job.
       environments:
         - environment_key: default
-
-          # Full documentation of this spec can be found at:
-          # https://docs.databricks.com/api/workspace/jobs/create#environments-spec
           spec:
-            client: "2"
+            environment_version: "3"
             dependencies:
               - ../dist/*.whl

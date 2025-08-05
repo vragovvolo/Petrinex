@@ -51,3 +51,4 @@ This repo contains code for the Petrinex project. It illustrates how to use decl
 ## Testing
 
 - As this is mainly designed to run in Databricks, we use an actual spark connection to run any spark unit tests.
+- The tests are run in Serverless to replicate a full serverless workflow.
