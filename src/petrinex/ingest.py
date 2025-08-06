@@ -7,10 +7,7 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import tempfile
 from io import BytesIO
-from typing import List, Tuple
-from pathlib import Path
-from pyspark.sql.utils import AnalysisException
-from pyspark.sql import SparkSession, DataFrame
+from typing import List
 
 from .config import PetrinexConfig, DatasetConfig
 
@@ -115,7 +112,7 @@ def download_petrinex_data(config: PetrinexConfig, dataset: DatasetConfig) -> st
                 )
                 continue
 
-            logger.info(f"Downloaded {dataset.code} {month} – extracting files")
+            logger.warning(f"Downloaded {dataset.code} {month} – extracting files")
             _extract_all_csvs(response.content, download_dir)
             successful_downloads += 1
 
@@ -127,104 +124,3 @@ def download_petrinex_data(config: PetrinexConfig, dataset: DatasetConfig) -> st
         f"Successfully downloaded and extracted data for {successful_downloads}/{len(months_list)} months"
     )
     return download_dir
-
-
-def process_csvs_to_delta(
-    config: PetrinexConfig,
-    dataset: DatasetConfig,
-    csv_directory: str,
-    spark: SparkSession,
-) -> DataFrame:
-    """
-    Process CSV files from download directory and write to Delta table.
-
-    Args:
-        config: Main configuration object
-        dataset: Dataset-specific configuration
-        csv_directory: Directory containing CSV files
-        spark: Spark session
-
-    Returns:
-        DataFrame that was written to Delta
-    """
-    # Use the CSV directory path directly (works for both Volumes and local paths)
-    csv_path_pattern = f"{csv_directory}/*.CSV"
-
-    logger.info(f"Reading CSV files from pattern: {csv_path_pattern}")
-
-    # Read CSV files into DataFrame
-    df = (
-        spark.read.option("header", True)
-        .option("inferSchema", False)
-        .option("pathGlobFilter", "*.CSV")
-        .csv(csv_path_pattern)
-    )
-
-    # Create catalog and schema if they don't exist
-    logger.info(
-        f"Ensuring catalog {config.catalog} and schema {config.schema_name} exist"
-    )
-    spark.sql(f"CREATE CATALOG IF NOT EXISTS {config.catalog}")
-    spark.sql(f"CREATE SCHEMA IF NOT EXISTS {config.catalog}.{config.schema_name}")
-
-    # Get full table name
-    full_table_name = f"{config.catalog}.{config.schema_name}.{dataset.table_name}"
-
-    # Write DataFrame to Delta table
-    logger.info(f"Writing DataFrame to Delta table: {full_table_name}")
-    df.write.option("overwriteSchema", "true").mode("overwrite").format(
-        "delta"
-    ).saveAsTable(full_table_name)
-
-    row_count = df.count()
-    logger.info(
-        f"{dataset.name} data successfully written to {full_table_name} ({row_count:,} rows)"
-    )
-
-    return df
-
-
-def ingest_conventional_data(config: PetrinexConfig, spark: SparkSession) -> DataFrame:
-    """
-    Download Alberta Conventional Volumetric data for the given date range and write to Delta table.
-
-    Args:
-        config: Configuration object containing all settings
-        spark: Spark session for Delta operations
-
-    Returns:
-        DataFrame that was written to Delta
-    """
-    logger.info("Starting conventional volumetric data ingestion")
-
-    # Download the data
-    csv_directory = download_petrinex_data(config, config.ingest.conventional)
-
-    # Process CSVs and write to Delta
-    df = process_csvs_to_delta(config, config.ingest.conventional, csv_directory, spark)
-
-    logger.info("Conventional volumetric data ingestion completed successfully")
-    return df
-
-
-def ingest_ngl_data(config: PetrinexConfig, spark: SparkSession) -> DataFrame:
-    """
-    Download Alberta NGL & Marketable Gas Volumes data for the given date range and write to Delta table.
-
-    Args:
-        config: Configuration object containing all settings
-        spark: Spark session for Delta operations
-
-    Returns:
-        DataFrame that was written to Delta
-    """
-    logger.info("Starting NGL & Marketable Gas data ingestion")
-
-    # Download the data
-    csv_directory = download_petrinex_data(config, config.ingest.ngl)
-
-    # Process CSVs and write to Delta
-    df = process_csvs_to_delta(config, config.ingest.ngl, csv_directory, spark)
-
-    logger.info("NGL & Marketable Gas data ingestion completed successfully")
-    return df

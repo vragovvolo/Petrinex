@@ -1,9 +1,9 @@
 catalog: shm
 schema: petrinex
 ingest:
-  download_dir: "./petrinex_downloads"
-  start_month_yyyy_mm: "2020-01"
-  end_month_yyyy_mm: "2020-04"
+  download_dir: "Volumes/shm/petrinex/bronze"
+  start_month_yyyy_mm: "2025-01"
+  end_month_yyyy_mm: "2025-04"
   timeout_seconds: 30
   conventional:
     download: true
