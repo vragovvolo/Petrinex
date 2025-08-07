@@ -18,6 +18,7 @@ from petrinex.forecast import (
     export_forecast_summary_table,
     export_forecasted_production_table,
     combine_historical_and_forecast,
+    filter_wells_by_min_months,
 )
 
 
@@ -339,3 +340,29 @@ def test_export_empty_forecasts():
         empty_forecasts, "GasProduction"
     )
     assert len(production_table) == 0
+
+
+def test_filter_wells_by_min_months_spark(spark_session, sample_ngl_data_with_time):
+    """Test Spark well filtering functionality."""
+    # Convert pandas to Spark DataFrame
+    spark_df = spark_session.createDataFrame(sample_ngl_data_with_time)
+
+    # Test filtering with minimum months
+    filtered_df = filter_wells_by_min_months(spark_df, min_months=12)
+
+    # Should have some wells with sufficient data
+    filtered_count = filtered_df.count()
+    original_count = spark_df.count()
+
+    assert filtered_count <= original_count
+    assert filtered_count > 0  # Should have at least some wells with 12+ months
+
+
+def test_forecast_spark_workflow_imports():
+    """Test that the main Spark workflow function can be imported."""
+    from petrinex.forecast import forecast_spark_workflow
+
+    # Should be callable
+    assert callable(forecast_spark_workflow)
+
+    # Note: Full integration tests would need a real Spark environment with catalog access

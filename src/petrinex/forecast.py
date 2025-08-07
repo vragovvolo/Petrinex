@@ -15,6 +15,16 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import curve_fit, OptimizeWarning
 
+from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql.functions import col, count, lit, when
+from pyspark.sql.types import (
+    StructType,
+    StructField,
+    StringType,
+    DoubleType,
+    TimestampType,
+)
+
 logger = logging.getLogger(__name__)
 
 warnings.filterwarnings("ignore", category=OptimizeWarning)
@@ -37,7 +47,7 @@ def filter_wells_by_min_months(df, min_months: int, well_id_column: str = "WellI
         well_id_column
     )
     return df.join(valid_wells, on=well_id_column, how="inner")
-   
+
 
 def exponential_decline(t: np.ndarray, qi: float, di: float) -> np.ndarray:
     """
@@ -514,12 +524,21 @@ def forecast_well_production(
         }
     )
 
+    # Get AIC from the best fit result
+    aic_value = None
+    if (
+        "all_results" in fit_result
+        and fit_result["curve_type"] in fit_result["all_results"]
+    ):
+        aic_value = fit_result["all_results"][fit_result["curve_type"]].get("aic", None)
+
     return {
         "success": True,
         "well_id": well_data["WellID"].iloc[0],
         "curve_type": fit_result["curve_type"],
         "parameters": fit_result["parameters"],
         "r_squared": fit_result["r_squared"],
+        "aic": aic_value,
         "historical_data": well_data,
         "forecast": forecast_df,
     }
@@ -580,21 +599,25 @@ def export_forecast_summary_table(
     forecasts: Dict[str, Dict], production_type: str = "OilProduction"
 ) -> pd.DataFrame:
     """
-    Export forecast summary as a structured table.
+    Export comprehensive forecast summary with ARPS parameters and date ranges.
 
     Args:
         forecasts: Dictionary of forecast results from forecast_multiple_wells
         production_type: Type of production being forecast
 
     Returns:
-        DataFrame with forecast summary information
+        DataFrame with complete forecast summary information including all ARPS parameters
     """
+    import datetime as dt
+
     if not forecasts:
         return pd.DataFrame()
 
     summary_data = []
+    forecast_date = dt.datetime.now().strftime("%Y-%m-%d")
+
     for well_id, forecast in forecasts.items():
-        # Get initial parameters
+        # Get ARPS parameters
         params = forecast["parameters"]
 
         # Calculate cumulative forecast production (first 12 months)
@@ -605,26 +628,58 @@ def export_forecast_summary_table(
         else:
             cum_forecast_12m = forecast_df[f"{production_type}_Forecast"].sum()
 
-        # Get historical data stats
+        # Get historical data stats and date ranges
         hist_data = forecast["historical_data"]
-        hist_prod = hist_data[hist_data[production_type] > 0][production_type]
+        hist_prod = hist_data[hist_data[production_type] > 0]
 
+        # Date range information
+        if len(hist_prod) > 0:
+            min_date = hist_prod["ProductionMonth"].min()
+            max_date = hist_prod["ProductionMonth"].max()
+            data_points = len(hist_prod)
+
+            # Production statistics
+            avg_production = hist_prod[production_type].mean()
+            peak_production = hist_prod[production_type].max()
+            last_production = hist_prod[production_type].iloc[-1]
+        else:
+            min_date = None
+            max_date = None
+            data_points = 0
+            avg_production = 0
+            peak_production = 0
+            last_production = 0
+
+        # Enhanced summary row with all ARPS parameters and metadata
         summary_row = {
+            # Identifiers and metadata
             "WellID": well_id,
             "ProductionType": production_type,
+            "ForecastDate": forecast_date,
+            # ARPS fit information
             "CurveType": forecast["curve_type"],
             "RSquared": forecast["r_squared"],
+            "FitSuccess": forecast["success"],
+            # All ARPS parameters (qi, di, b)
             "InitialRate_qi": params.get("qi", None),
             "DeclineRate_di": params.get("di", None),
             "DeclineExponent_b": params.get("b", None),
-            "HistoricalAvgProduction": hist_prod.mean() if len(hist_prod) > 0 else 0,
-            "HistoricalPeakProduction": hist_prod.max() if len(hist_prod) > 0 else 0,
-            "HistoricalLastProduction": hist_prod.iloc[-1] if len(hist_prod) > 0 else 0,
-            "ForecastCumulative12Month": cum_forecast_12m,
-            "DataPointsUsed": len(hist_prod),
+            # Historical data date range
+            "HistoricalDataMinDate": min_date,
+            "HistoricalDataMaxDate": max_date,
+            "DataPointsUsed": data_points,
+            # Historical production statistics
+            "HistoricalAvgProduction": avg_production,
+            "HistoricalPeakProduction": peak_production,
+            "HistoricalLastProduction": last_production,
+            # Forecast information
             "ForecastStartDate": (
                 forecast_df["ProductionMonth"].iloc[0] if len(forecast_df) > 0 else None
             ),
+            "ForecastCumulative12Month": cum_forecast_12m,
+            # Additional fit quality metrics
+            "AIC": forecast.get("aic", None),
+            "FitError": forecast.get("error", None),
         }
 
         summary_data.append(summary_row)
@@ -802,3 +857,140 @@ def combine_historical_and_forecast(
     combined_data = combined_data.sort_values(["WellID", "ProductionMonth"])
 
     return combined_data
+
+
+def forecast_spark_workflow(
+    spark: SparkSession, config, input_table: str, batch_size: int = None, **kwargs
+) -> Dict[str, str]:
+    """
+    Spark-based forecasting workflow with memory-efficient batch processing.
+
+    Args:
+        spark: SparkSession
+        config: Config object with forecast settings
+        input_table: Full table name (catalog.schema.table) for input data
+        batch_size: Number of wells to process in each batch (default from config)
+        **kwargs: Override config defaults (forecast_months, production_columns, curve_type, min_r_squared, min_months)
+
+    Returns:
+        Dictionary mapping production types to output table names
+    """
+    # Get parameters from config with optional overrides
+    forecast_months = kwargs.get("forecast_months", config.forecast.horizon_months)
+    min_months = kwargs.get("min_months", config.forecast.min_months)
+    production_columns = kwargs.get("production_columns", config.ngl.production_columns)
+    curve_type = kwargs.get("curve_type", "auto")
+    min_r_squared = kwargs.get("min_r_squared", 0.5)
+
+    # Default batch size to 500 wells if not specified
+    if batch_size is None:
+        batch_size = getattr(config.forecast, "batch_size", 500)
+
+    # Load and filter the Spark table
+    full_df = spark.table(input_table)
+    filtered_df = filter_wells_by_min_months(full_df, min_months)
+
+    # Get list of wells to process
+    wells_list = [
+        row.WellID for row in filtered_df.select("WellID").distinct().collect()
+    ]
+    total_wells = len(wells_list)
+
+    output_tables = {}
+
+    # Process each production type
+    for production_type in production_columns:
+        all_summaries = []
+        all_forecasts = []
+        all_combined = []
+
+        # Process wells in batches
+        for i in range(0, total_wells, batch_size):
+            batch_wells = wells_list[i : i + batch_size]
+
+            # Filter data for this batch of wells
+            batch_spark_df = filtered_df.filter(col("WellID").isin(batch_wells))
+            batch_pandas_df = batch_spark_df.toPandas()
+
+            if batch_pandas_df.empty:
+                continue
+
+            # Run forecasting on this batch
+            batch_forecasts = forecast_multiple_wells(
+                batch_pandas_df,
+                forecast_months=forecast_months,
+                production_column=production_type,
+                curve_type=curve_type,
+                min_r_squared=min_r_squared,
+            )
+
+            if not batch_forecasts:
+                continue
+
+            # Generate tables for this batch
+            batch_summary = export_forecast_summary_table(
+                batch_forecasts, production_type
+            )
+            batch_forecast_production = export_forecasted_production_table(
+                batch_forecasts, production_type, batch_pandas_df
+            )
+            batch_combined = combine_historical_and_forecast(
+                batch_pandas_df, batch_forecast_production, production_type
+            )
+
+            # Collect batch results
+            if len(batch_summary) > 0:
+                all_summaries.append(batch_summary)
+            if len(batch_forecast_production) > 0:
+                all_forecasts.append(batch_forecast_production)
+            if len(batch_combined) > 0:
+                all_combined.append(batch_combined)
+
+        # Combine all batch results and write to tables
+        if all_summaries:
+            final_summary = pd.concat(all_summaries, ignore_index=True)
+            summary_table_name = f"{config.catalog}.{config.schema}.{production_type.lower()}_forecast_summary"
+            _write_pandas_to_spark_table(spark, final_summary, summary_table_name)
+
+        if all_forecasts:
+            final_forecasts = pd.concat(all_forecasts, ignore_index=True)
+            forecast_table_name = f"{config.catalog}.{config.schema}.{production_type.lower()}_forecasted_production"
+            _write_pandas_to_spark_table(spark, final_forecasts, forecast_table_name)
+
+        if all_combined:
+            final_combined = pd.concat(all_combined, ignore_index=True)
+            combined_table_name = f"{config.catalog}.{config.schema}.{production_type.lower()}_historical_forecast_combined"
+            _write_pandas_to_spark_table(spark, final_combined, combined_table_name)
+
+        output_tables[production_type] = {
+            "summary": summary_table_name,
+            "forecast": forecast_table_name,
+            "combined": combined_table_name,
+        }
+
+    return output_tables
+
+
+def _write_pandas_to_spark_table(
+    spark: SparkSession,
+    pandas_df: pd.DataFrame,
+    table_name: str,
+    mode: str = "overwrite",
+) -> None:
+    """
+    Write a Pandas DataFrame to a Spark table with proper schema handling.
+
+    Args:
+        spark: SparkSession
+        pandas_df: Pandas DataFrame to write
+        table_name: Full table name (catalog.schema.table)
+        mode: Write mode ('overwrite', 'append', etc.)
+    """
+    if pandas_df.empty:
+        return
+
+    # Convert Pandas DataFrame to Spark DataFrame
+    spark_df = spark.createDataFrame(pandas_df)
+
+    # Write to table
+    spark_df.write.mode(mode).option("mergeSchema", "true").saveAsTable(table_name)
