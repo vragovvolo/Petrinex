@@ -2,8 +2,9 @@ import logging
 from typing import Dict, Optional, List, Tuple
 from pathlib import Path
 from pyspark.sql import DataFrame
-from pyspark.sql.functions import col, when, lit, to_timestamp, regexp_replace, trim
+from pyspark.sql.functions import col, count, when, lit, to_timestamp, regexp_replace, trim, min as spark_min, max as spark_max, datediff
 from pyspark.sql.types import StringType, DoubleType, TimestampType
+from pyspark.sql.window import Window
 
 from petrinex.schemas import get_schema
 
@@ -22,8 +23,8 @@ def process_csv_to_bronze(spark, config, dataset: str) -> tuple:
 
     raw_df = spark.read.option("header", True).schema(schema).csv(csv_path)
 
-    bronze_df = _clean_data(raw_df, data_config.code.lower())
-    bronze_df.write.mode("overwrite").saveAsTable(bronze_table)
+    bronze_df = _clean_data(raw_df, data_config.code.lower(), config)
+    bronze_df.write.mode("overwrite").option("mergeSchema", "true").saveAsTable(bronze_table)
 
     return bronze_df
 
@@ -37,19 +38,24 @@ def process_bronze_to_silver(spark, config, dataset: str) -> tuple:
     bronze_df = spark.table(bronze_table)
 
     silver_df = bronze_df.withColumn(
-        "ProductionMonth", to_timestamp(col("ProductionMonth"), "yyyy-MM")
+        "ProductionMonth",
+        when(
+            col("ProductionMonth").rlike(r"^\d{4}-\d{2}$"),
+            to_timestamp(col("ProductionMonth"), "yyyy-MM"),
+        ).otherwise(to_timestamp(col("ProductionMonth"))),
     )
-    silver_df.write.mode("overwrite").saveAsTable(silver_table)
+
+    silver_df.write.mode("overwrite").option("mergeSchema", "true").saveAsTable(silver_table)
 
     return silver_df
 
 
-def _clean_data(df: DataFrame, table_code: str) -> DataFrame:
+def _clean_data(df: DataFrame, table_code: str, config) -> DataFrame:
     """Clean data - convert strings to numbers, handle nulls."""
     if table_code == "vol":
         return _clean_vol(df)
     elif table_code == "ngl":
-        return _clean_ngl(df)
+        return _clean_ngl(df, config)
     return df
 
 
@@ -71,10 +77,10 @@ def _clean_vol(df: DataFrame) -> DataFrame:
     return df
 
 
-def _clean_ngl(df: DataFrame) -> DataFrame:
+def _clean_ngl(df: DataFrame, config) -> DataFrame:
     """Clean NGL data - convert production numbers and clean key strings."""
     # Convert numeric production columns
-    production_cols = [
+    numeric_cols = [
         "GasProduction",
         "OilProduction",
         "CondensateProduction",
@@ -86,20 +92,43 @@ def _clean_ngl(df: DataFrame) -> DataFrame:
         "LiteMixVolume",
     ]
 
-    for col_name in production_cols:
+    # Clean numeric columns
+    for col_name in numeric_cols:
         if col_name in df.columns:
             df = df.withColumn(
                 col_name,
+                when((col(col_name) == "") | (col(col_name).isNull()), None)
+            ).withColumn(
+                col_name,
                 regexp_replace(col(col_name), r"[^\d.-]", "").cast(DoubleType()),
+            ).withColumn(
+                col_name,
+                col(col_name).try_cast(DoubleType())
             )
 
     # Ensure production values are non-negative
-    production_cols = ["GasProduction", "OilProduction", "CondensateProduction"]
+    production_cols = config.ngl.production_columns
     for col_name in production_cols:
         if col_name in df.columns:
             df = df.withColumn(
                 col_name, when(col(col_name) < 0, lit(0.0)).otherwise(col(col_name))
             )
+
+    # Add days since first production for each well using window functions
+    df = df.orderBy("WellID", "ProductionMonth")
+    first_production_window = Window.partitionBy("WellID")
+
+    df = (
+        df.withColumn(
+            "FirstProductionDate",
+            spark_min("ProductionMonth").over(first_production_window),
+        )
+        .withColumn(
+            "DaysFromFirst",
+            datediff(col("ProductionMonth"), col("FirstProductionDate")),
+        )
+        .drop("FirstProductionDate")
+    )
 
     # Clean key string columns
     for col_name in ["OperatorBAID", "ReportingFacilityID", "WellID"]:

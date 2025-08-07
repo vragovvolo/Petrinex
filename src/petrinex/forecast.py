@@ -20,53 +20,24 @@ logger = logging.getLogger(__name__)
 warnings.filterwarnings("ignore", category=OptimizeWarning)
 
 
-def prepare_well_data(
-    ngl_df: pd.DataFrame,
-    min_months: int = 6,
-    production_columns: Optional[List[str]] = None,
-) -> pd.DataFrame:
+def filter_wells_by_min_months(df, min_months: int, well_id_column: str = "WellID"):
     """
-    Prepare well production data for forecasting by aggregating and cleaning.
+    Filter wells to keep only those with minimum number of months of data.
 
     Args:
-        ngl_df: Raw NGL production DataFrame
+        df: DataFrame (pandas or Spark) with well production data
         min_months: Minimum number of months of data required for a well
-        production_columns: List of production columns to include
+        well_id_column: Name of the well ID column
 
     Returns:
-        Cleaned DataFrame with wells ready for forecasting
+        DataFrame with only wells that have sufficient data
     """
-    if production_columns is None:
-        production_columns = ["OilProduction", "GasProduction", "CondensateProduction"]
-
-    # Convert ProductionMonth to datetime
-    df = ngl_df.copy()
-    df["ProductionMonth"] = pd.to_datetime(df["ProductionMonth"])
-
-    # Convert production columns to numeric, handling errors
-    for col in production_columns:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
-
-    # Remove wells with insufficient data
-    well_counts = df.groupby("WellID").size()
-    valid_wells = well_counts[well_counts >= min_months].index
-    df = df[df["WellID"].isin(valid_wells)]
-
-    # Sort by well and date
-    df = df.sort_values(["WellID", "ProductionMonth"])
-
-    # Add days since first production for each well
-    df["DaysFromFirst"] = df.groupby("WellID")["ProductionMonth"].transform(
-        lambda x: (x - x.min()).dt.days
+    well_counts = df.groupBy(well_id_column).agg(count("*").alias("month_count"))
+    valid_wells = well_counts.filter(col("month_count") >= min_months).select(
+        well_id_column
     )
-
-    logger.info(
-        f"Prepared data for {len(valid_wells)} wells with {min_months}+ months of data"
-    )
-
-    return df
-
+    return df.join(valid_wells, on=well_id_column, how="inner")
+   
 
 def exponential_decline(t: np.ndarray, qi: float, di: float) -> np.ndarray:
     """

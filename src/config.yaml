@@ -15,5 +15,10 @@ ngl:
   code: "NGL"
   name: "NGL & Marketable Gas Volumes"
   table_name: "ngl_bronze"
+  production_columns:
+    - "OilProduction"
+    - "GasProduction"
+    - "CondensateProduction"
 forecast:
   horizon_months: 30
+  min_months: 6
