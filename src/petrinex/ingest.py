@@ -63,7 +63,7 @@ def _generate_month_list(start_month: str, end_month: str) -> List[str]:
     return months_list
 
 
-def download_petrinex_data(config, dataset) -> str:
+def download_petrinex_data(config, dataset: str) -> str:
     """
     Download Petrinex data for the specified dataset and date range.
 
@@ -74,34 +74,30 @@ def download_petrinex_data(config, dataset) -> str:
     Returns:
         Path to directory containing downloaded CSV files
     """
-    # Setup download directory
-    download_dir = os.path.join(config.ingest.download_dir, dataset.download_subdir)
+    data_config = getattr(config, dataset)
+    download_dir = os.path.join(config.download_dir, data_config.code.lower())
 
-    # Prepare download directory (clear it if it exists)
-    if os.path.exists(download_dir):
-        logger.info(f"Clearing existing download directory: {download_dir}")
-        shutil.rmtree(download_dir)
     os.makedirs(download_dir, exist_ok=True)
     logger.info(f"Created download directory: {download_dir}")
 
     # Generate list of months to download
-    start_month = config.ingest.start_month_yyyy_mm
-    end_month = config.ingest.effective_end_month
+    start_month = config.start_month_yyyy_mm
+    end_month = config.end_month_yyyy_mm
     months_list = _generate_month_list(start_month, end_month)
 
     logger.info(
-        f"Downloading {dataset.name} data for {len(months_list)} months: "
+        f"Downloading {dataset} data for {len(months_list)} months: "
         f"{months_list[0]} to {months_list[-1]}"
     )
 
     # Download each month
     successful_downloads = 0
     for month in months_list:
-        url = f"{config.ingest.api_base_url}/{dataset.code}/{month}/CSV"
+        url = f"{config.api_url}/{data_config.code}/{month}/CSV"
 
         try:
-            logger.debug(f"Downloading {dataset.code} data for {month} from {url}")
-            response = requests.get(url, timeout=config.ingest.timeout_seconds)
+            logger.info(f"Downloading {data_config.code} data for {month} from {url}")
+            response = requests.get(url, timeout=config.timeout_seconds)
 
             if response.status_code != 200:
                 logger.warning(
@@ -109,7 +105,7 @@ def download_petrinex_data(config, dataset) -> str:
                 )
                 continue
 
-            logger.warning(f"Downloaded {dataset.code} {month} – extracting files")
+            logger.info(f"Downloaded {data_config.code} {month} – extracting files")
             _extract_all_csvs(response.content, download_dir)
             successful_downloads += 1
 

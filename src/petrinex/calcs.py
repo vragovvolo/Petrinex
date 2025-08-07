@@ -1,4 +1,4 @@
-"""Simple NGL calculations with AER compliance and unit conversions."""
+"""Calculation Module"""
 
 import logging
 from pyspark.sql import DataFrame
@@ -6,7 +6,7 @@ from pyspark.sql.functions import col, when, lit, coalesce
 
 logger = logging.getLogger(__name__)
 
-# AER-approved factors
+# AER constants
 GAS_EQUIV = {
     "ethane": 384.0,
     "propane": 235.0,

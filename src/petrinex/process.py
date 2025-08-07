@@ -2,66 +2,67 @@ import logging
 from typing import Dict, Optional, List, Tuple
 from pathlib import Path
 from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.functions import (
-    col,
-    when,
-    lit,
-    to_timestamp,
-    regexp_replace,
-    trim,
-    monotonically_increasing_id,
-    input_file_name,
-)
+from pyspark.sql.functions import col, when, lit, to_timestamp, regexp_replace, trim
 from pyspark.sql.types import StringType, DoubleType, TimestampType
 
-# Config import removed - using simple config objects
 from petrinex.schemas import get_schema
 
 logger = logging.getLogger(__name__)
 
 
-def process_csv_to_tables(config, dataset: str, spark) -> tuple:
-    """Simple CSV to Delta tables processing."""
+def process_csv_to_bronze(config, dataset: str, spark) -> tuple:
+    """Simple CSV to Delta tables processing for local development."""
 
-    # Basic setup
-    table_type = "conv_vol" if dataset == "conventional" else "ngl_vol"
-    csv_path = f"/{config.ingest.download_dir}/{dataset}/*.CSV"
+    assert dataset in ["conventional", "ngl"], "Invalid dataset"
+    data_config = getattr(config, dataset)
+
+    csv_path = f"{config.download_dir}/{data_config.code.lower()}/*.CSV"
     bronze_table = f"{config.catalog}.{config.schema}.{dataset}_bronze"
     silver_table = f"{config.catalog}.{config.schema}.{dataset}_silver"
 
-    logger.info(f"Processing {dataset}: {csv_path} -> {bronze_table}, {silver_table}")
+    # Detect environment based on path
+    is_spark_env = "/Volumes/" in config.download_dir
 
-    # Read CSV files
-    schema = get_schema(table_type, "bronze")
+    logger.info(f"Processing {dataset}: {csv_path} -> {bronze_table}, {silver_table}")
+    logger.info(f"Environment: {'Spark/Production' if is_spark_env else 'Local'}")
+
+    # Read CSV files - handle local vs Spark environments differently
+    schema = get_schema(data_config.code.lower(), "bronze")
+
     raw_df = spark.read.option("header", True).schema(schema).csv(csv_path)
 
-    # Clean data for bronze
-    bronze_df = _clean_data(raw_df, table_type)
+    bronze_df = _clean_data(raw_df, data_config.code.lower())
+    bronze_df.write.mode("overwrite").saveAsTable(bronze_table)
 
-    # Create silver with timestamps
+    return bronze_df
+
+
+def process_bronze_to_silver(config, dataset: str, spark) -> tuple:
+    """Process bronze data to silver."""
+    data_config = getattr(config, dataset)
+    bronze_table = f"{config.catalog}.{config.schema}.{dataset}_bronze"
+    silver_table = f"{config.catalog}.{config.schema}.{dataset}_silver"
+
+    bronze_df = spark.table(bronze_table)
+
     silver_df = bronze_df.withColumn(
         "ProductionMonth", to_timestamp(col("ProductionMonth"), "yyyy-MM")
     )
+    silver_df.write.mode("overwrite").saveAsTable(silver_table)
 
-    # Write tables
-    bronze_df.write.mode("overwrite").format("delta").saveAsTable(bronze_table)
-    silver_df.write.mode("overwrite").format("delta").saveAsTable(silver_table)
-
-    logger.info(f"Wrote {bronze_df.count()} rows to {bronze_table} and {silver_table}")
-
-    return bronze_df, silver_df
+    return silver_df
 
 
-def _clean_data(df: DataFrame, table_type: str) -> DataFrame:
+def _clean_data(df: DataFrame, table_code: str) -> DataFrame:
     """Clean data - convert strings to numbers, handle nulls."""
-    if table_type == "conv_vol":
-        return _clean_conv_vol(df)
-    elif table_type == "ngl_vol":
-        return _clean_ngl_vol(df)
+    if table_code == "vol":
+        return _clean_vol(df)
+    elif table_code == "ngl":
+        return _clean_ngl(df)
     return df
 
 
-def _clean_conv_vol(df: DataFrame) -> DataFrame:
+def _clean_vol(df: DataFrame) -> DataFrame:
     """Clean conventional data - just convert numbers and clean strings."""
     # Convert numeric columns
     for col_name in ["Volume", "Energy", "Hours"]:
@@ -79,7 +80,7 @@ def _clean_conv_vol(df: DataFrame) -> DataFrame:
     return df
 
 
-def _clean_ngl_vol(df: DataFrame) -> DataFrame:
+def _clean_ngl(df: DataFrame) -> DataFrame:
     """Clean NGL data - convert production numbers and clean key strings."""
     # Convert numeric production columns
     production_cols = [
@@ -109,12 +110,19 @@ def _clean_ngl_vol(df: DataFrame) -> DataFrame:
     return df
 
 
-def prepare_data_for_forecasting(
-    spark, config, table_type: str = "ngl_vol"
-) -> DataFrame:
+def prepare_data_for_forecasting(spark, config, dataset: str = "ngl") -> DataFrame:
     """Load silver data and clean for forecasting."""
-    table_name = f"{config.catalog}.{config.schema}.{table_type}_silver"
-    df = spark.table(table_name)
+    # Detect environment based on path
+    is_spark_env = "/Volumes/" in config.download_dir
+
+    if is_spark_env:
+        # Production environment - read from Delta tables
+        table_name = f"{config.catalog}.{config.schema}.{dataset}_silver"
+        df = spark.table(table_name)
+    else:
+        # Local development - read from parquet files
+        parquet_path = f"../fixtures/{dataset}_silver.parquet"
+        df = spark.read.parquet(parquet_path)
 
     # Just ensure production values are non-negative
     production_cols = ["GasProduction", "OilProduction", "CondensateProduction"]

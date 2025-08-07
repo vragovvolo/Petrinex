@@ -1,7 +1,3 @@
-"""
-Simple Spark schemas for Petrinex bronze and silver tables.
-"""
-
 from pyspark.sql.types import (
     StructType,
     StructField,
@@ -10,9 +6,7 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
-
-# Bronze table schemas
-CONV_VOL_BRONZE_SCHEMA = StructType(
+CONV_BRONZE_SCHEMA = StructType(
     [
         StructField("ProductionMonth", StringType(), nullable=False),
         StructField("OperatorBAID", StringType(), nullable=False),
@@ -47,7 +41,7 @@ CONV_VOL_BRONZE_SCHEMA = StructType(
     ]
 )
 
-NGL_VOL_BRONZE_SCHEMA = StructType(
+NGL_BRONZE_SCHEMA = StructType(
     [
         StructField("ReportingFacilityID", StringType(), nullable=False),
         StructField("ReportingFacilityName", StringType(), nullable=True),
@@ -78,8 +72,7 @@ NGL_VOL_BRONZE_SCHEMA = StructType(
     ]
 )
 
-# Silver schemas (same as bronze but with timestamps)
-CONV_VOL_SILVER_SCHEMA = StructType(
+CONV_SILVER_SCHEMA = StructType(
     [
         StructField("ProductionMonth", TimestampType(), nullable=False),
         StructField("OperatorBAID", StringType(), nullable=False),
@@ -114,7 +107,7 @@ CONV_VOL_SILVER_SCHEMA = StructType(
     ]
 )
 
-NGL_VOL_SILVER_SCHEMA = StructType(
+NGL_SILVER_SCHEMA = StructType(
     [
         StructField("ReportingFacilityID", StringType(), nullable=False),
         StructField("ReportingFacilityName", StringType(), nullable=True),
@@ -146,31 +139,31 @@ NGL_VOL_SILVER_SCHEMA = StructType(
 )
 
 
-def get_schema(table_type: str, layer: str = "bronze") -> StructType:
+def get_schema(table_code: str, layer: str = "bronze") -> StructType:
     """
     Get the appropriate schema for a table type and layer.
 
     Args:
-        table_type: Type of table ('conv_vol' or 'ngl_vol')
+        table_code: Type of table ('vol' or 'ngl')
         layer: Data layer ('bronze' or 'silver')
 
     Returns:
         Spark StructType schema
     """
     schema_map = {
-        "conv_vol": {
-            "bronze": CONV_VOL_BRONZE_SCHEMA,
-            "silver": CONV_VOL_SILVER_SCHEMA,
+        "vol": {
+            "bronze": CONV_BRONZE_SCHEMA,
+            "silver": CONV_SILVER_SCHEMA,
         },
-        "ngl_vol": {
-            "bronze": NGL_VOL_BRONZE_SCHEMA,
-            "silver": NGL_VOL_SILVER_SCHEMA,
+        "ngl": {
+            "bronze": NGL_BRONZE_SCHEMA,
+            "silver": NGL_SILVER_SCHEMA,
         },
     }
 
-    if table_type not in schema_map:
-        raise ValueError(f"Unknown table type: {table_type}")
-    if layer not in schema_map[table_type]:
+    if table_code not in schema_map:
+        raise ValueError(f"Unknown table type: {table_code}")
+    if layer not in schema_map[table_code]:
         raise ValueError(f"Unknown layer: {layer}")
 
-    return schema_map[table_type][layer]
+    return schema_map[table_code][layer]

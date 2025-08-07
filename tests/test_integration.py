@@ -33,7 +33,7 @@ def test_csv_to_forecast_pipeline():
     # Step 2: Create Silver data (Bronze -> Silver with calculations)
 
     # Import NGL calculation logic
-    from petrinex.ngl_calcs import GAS_EQUIV
+    from petrinex.calcs import GAS_EQUIV
 
     silver_data = bronze_data.copy()
 
@@ -159,19 +159,25 @@ def test_config_to_processing_integration():
 
     # Step 1: Load configuration
     try:
-        from petrinex.config import load_config
+        from petrinex.config import load_config, DotConfig
 
-        config = load_config("src/config.yaml")
+        # Test both loading methods
+        config_dict = load_config("src/config.yaml")
+        config = DotConfig("src/config.yaml")
 
         # Basic config validation
-        assert hasattr(config, "catalog"), "Config should have catalog"
-        assert hasattr(config, "schema"), "Config should have schema"
+        assert "catalog" in config_dict, "Config should have catalog"
+        assert "schema" in config_dict, "Config should have schema"
+
+        # Test DotConfig provides attribute access
+        assert config.catalog, "DotConfig should provide catalog access"
+        assert config.schema, "DotConfig should provide schema access"
 
     except FileNotFoundError:
         pytest.skip("Config file not available")
 
     # Step 2: Test processing functions
-    from petrinex.ngl_calcs import GAS_EQUIV
+    from petrinex.calcs import GAS_EQUIV
 
     # Verify GAS_EQUIV constants loaded
     assert len(GAS_EQUIV) >= 5, "Should have gas equivalent factors"

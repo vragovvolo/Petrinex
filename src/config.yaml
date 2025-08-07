@@ -1,29 +1,19 @@
 catalog: shm
 schema: petrinex
-ingest:
-  download_dir: "Volumes/shm/petrinex/bronze"
-  start_month_yyyy_mm: "2025-01"
-  end_month_yyyy_mm: "2025-04"
-  timeout_seconds: 30
-  conventional:
-    download: true
-    code: "Vol"
-    name: "Conventional Volumetric"
-    table_name: "conv_vol_bronze"
-  ngl:
-    download: true
-    code: "NGL"
-    name: "NGL & Marketable Gas Volumes"
-    table_name: "ngl_vol_bronze"
-process:
-  conventional_table_name: ConventionalVolumetric
-  ngl_table_name: NGLVolumetric
-  wells_table_name: Well
+api_url: "https://www.petrinex.gov.ab.ca/publicdata/API/Files/AB/"
+download_dir: "/Volumes/shm/petrinex/bronze"
+start_month_yyyy_mm: "2025-01"
+end_month_yyyy_mm: "2025-04"
+timeout_seconds: 30
+conventional:
+  download: true
+  code: "Vol"
+  name: "Conventional Volumetric"
+  table_name: "conv_bronze"
+ngl:
+  download: true
+  code: "NGL"
+  name: "NGL & Marketable Gas Volumes"
+  table_name: "ngl_bronze"
 forecast:
-  model:
-    name: petrinex
-    version: 1.0.0
-    type: petrinex
-    parameters:
-      - name: forecast_horizon
-        value: 12
+  horizon_months: 30

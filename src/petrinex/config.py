@@ -1,39 +1,32 @@
-"""Simple configuration for Petrinex processing."""
+import yaml
+from pathlib import Path
 
 
-def load_config(config_path: str = "src/config.yaml"):
-    """Load config from YAML file."""
-    import yaml
+def load_config(config_path: str = "config.yaml") -> dict:
+    """Load configuration from YAML file."""
+    config_file = Path(config_path)
+    if not config_file.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
 
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
+    with open(config_file, "r") as f:
+        return yaml.safe_load(f)
 
-    # Create simple config object with attributes
-    class SimpleConfig:
-        def __init__(self, data):
-            self.catalog = data["catalog"]
-            self.schema = data["schema"]
-            self.ingest = SimpleIngest(data["ingest"])
-            self.forecast = SimpleForecast(data.get("forecast", {}))
 
-    class SimpleIngest:
-        def __init__(self, data):
-            self.download_dir = data["download_dir"]
-            self.start_month_yyyy_mm = data["start_month_yyyy_mm"]
-            self.end_month_yyyy_mm = data.get("end_month_yyyy_mm")
-            self.timeout_seconds = data.get("timeout_seconds", 30)
-            self.conventional = SimpleDataset(data["conventional"])
-            self.ngl = SimpleDataset(data["ngl"])
+class DotDict(dict):
+    def __getattr__(self, name):
+        try:
+            value = self[name]
 
-    class SimpleDataset:
-        def __init__(self, data):
-            self.download = data.get("download", True)
-            self.code = data["code"]
-            self.name = data["name"]
-            self.table_name = data["table_name"]
+            if isinstance(value, dict):
+                return DotDict(value)
+            return value
+        except KeyError:
+            raise AttributeError(
+                f"'{self.__class__.__name__}' object has no attribute '{name}'"
+            )
 
-    class SimpleForecast:
-        def __init__(self, data):
-            self.model = data.get("model", {})
 
-    return SimpleConfig(config)
+class DotConfig(DotDict):
+    def __init__(self, config_path: str = "config.yaml"):
+        config_data = load_config(config_path)
+        super().__init__(config_data)

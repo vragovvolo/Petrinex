@@ -90,3 +90,4 @@ uv run pytest
 
 - imperial unit conversions properly handled in the presentation layer (Streamlit app) rather than cluttering the core business logic.
 - Logging should only happen within the codebase (src/petrinex) and not the notebooks.
+- Works with volumes only, not using BDFS

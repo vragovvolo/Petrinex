@@ -15,7 +15,7 @@ from pathlib import Path
 
 def test_gas_equivalent_constants():
     """Test that AER-approved gas equivalent factors are correct."""
-    from petrinex.ngl_calcs import GAS_EQUIV, M3_TO_BBL, M3_TO_MCF
+    from petrinex.calcs import GAS_EQUIV, M3_TO_BBL, M3_TO_MCF
 
     # Test AER-approved gas equivalent factors (Directive 017)
     expected_factors = {
@@ -54,7 +54,7 @@ def test_pandas_ngl_calculations():
     )
 
     # Import constants for calculations
-    from petrinex.ngl_calcs import GAS_EQUIV, M3_TO_BBL, M3_TO_MCF
+    from petrinex.calcs import GAS_EQUIV, M3_TO_BBL, M3_TO_MCF
 
     # Calculate gas equivalents (pandas equivalent of Spark logic)
     test_data["ethane_gas_equiv"] = test_data["EthaneMixVolume"] * GAS_EQUIV["ethane"]
@@ -176,7 +176,7 @@ def test_aer_compliance_logic():
 def test_unit_conversion_accuracy():
     """Test unit conversion accuracy against AER standards."""
 
-    from petrinex.ngl_calcs import M3_TO_BBL, M3_TO_MCF
+    from petrinex.calcs import M3_TO_BBL, M3_TO_MCF
 
     # Test known conversions (AER Manual 011 standards)
     test_conversions = [
@@ -214,7 +214,7 @@ def test_calculation_integration_with_real_data():
     # Load small sample of real data
     df = pd.read_parquet(fixture_path).head(100)  # Test with 100 wells
 
-    from petrinex.ngl_calcs import GAS_EQUIV
+    from petrinex.calcs import GAS_EQUIV
 
     # Convert to numeric
     ngl_columns = [
@@ -253,7 +253,7 @@ def test_calculation_integration_with_real_data():
 def test_calculation_edge_cases():
     """Test edge cases and error handling in calculations."""
 
-    from petrinex.ngl_calcs import GAS_EQUIV
+    from petrinex.calcs import GAS_EQUIV
 
     # Test with missing/null data
     edge_case_data = pd.DataFrame(

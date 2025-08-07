@@ -12,7 +12,7 @@ from pathlib import Path
 from datetime import datetime, date
 
 # Import conversion constants for imperial units
-from src.petrinex.ngl_calcs import M3_TO_BBL, M3_TO_MCF
+from src.petrinex.calcs import M3_TO_BBL, M3_TO_MCF
 
 
 def convert_to_imperial_units(df: pd.DataFrame) -> pd.DataFrame:
@@ -486,7 +486,6 @@ def main():
 
     # Initialize selected_well in right column first
     with col2:
-        st.subheader("🔧 Filters & Well Information")
 
         # Filters section
         selected_well = st.selectbox(
@@ -507,18 +506,6 @@ def main():
             st.warning("No forecast data available for this well")
 
         st.divider()
-
-        # Legend section (moved from plot info)
-        st.subheader("📈 Chart Legend")
-        st.markdown("🔴 **Gas** (Solid: Historical, Dashed: Forecast)")
-        st.markdown("🟢 **Oil** (Solid: Historical, Dashed: Forecast)")
-        st.markdown("🟠 **Condensate** (Solid: Historical, Dashed: Forecast)")
-
-        st.divider()
-
-        # Well Information section
-        st.subheader("📊 Well Details")
-
         # Get well summary info for all fluids
         well_info = get_well_summary_info(selected_well, data)
 
