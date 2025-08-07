@@ -23,3 +23,16 @@ forecast:
   horizon_months: 30
   min_months: 6
   batch_size: 500
+  curve_type: auto
+  min_r_squared: 0.3
+  include_wells:
+    - ABWI100011906218W500
+    - ABWI100012206216W500
+    - ABWI100041406219W502
+    - ABWI103072206218W502
+    - ABWI100022906223W500
+    - ABWI100011906018W500
+  exclude_wells:
+    - ABWI100011906018W500
+
+

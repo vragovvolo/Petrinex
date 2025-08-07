@@ -860,7 +860,7 @@ def combine_historical_and_forecast(
 
 
 def forecast_spark_workflow(
-    spark: SparkSession, config, input_table: str, batch_size: int = None, **kwargs
+    spark: SparkSession, config, input_table: str, **kwargs
 ) -> Dict[str, str]:
     """
     Spark-based forecasting workflow with memory-efficient batch processing.
@@ -869,26 +869,37 @@ def forecast_spark_workflow(
         spark: SparkSession
         config: Config object with forecast settings
         input_table: Full table name (catalog.schema.table) for input data
-        batch_size: Number of wells to process in each batch (default from config)
-        **kwargs: Override config defaults (forecast_months, production_columns, curve_type, min_r_squared, min_months)
+
 
     Returns:
         Dictionary mapping production types to output table names
     """
-    # Get parameters from config with optional overrides
-    forecast_months = kwargs.get("forecast_months", config.forecast.horizon_months)
-    min_months = kwargs.get("min_months", config.forecast.min_months)
-    production_columns = kwargs.get("production_columns", config.ngl.production_columns)
-    curve_type = kwargs.get("curve_type", "auto")
-    min_r_squared = kwargs.get("min_r_squared", 0.5)
-
-    # Default batch size to 500 wells if not specified
-    if batch_size is None:
-        batch_size = getattr(config.forecast, "batch_size", 500)
+    
+    forecast_months = getattr(config.forecast, "forecast_months", 30)
+    
+    min_months = getattr(config.forecast, "forecast_months", 30)
+    production_columns = getattr(
+        config.ngl, 
+        "production_columns",
+        ['OilProduction','GasProduction', 'CondensateProduction']
+        )
+    curve_type = getattr(config.forecast, "curve_type", "auto")
+    min_r_squared = getattr(config.forecast, "min_r_squared", 0.3)
+    include_wells = getattr(config.forecast, "include_wells", [])
+    exclude_wells = getattr(config.forecast, "exclude_wells", [])
+    batch_size = getattr(config.forecast, "batch_size", 500)
 
     # Load and filter the Spark table
-    full_df = spark.table(input_table)
-    filtered_df = filter_wells_by_min_months(full_df, min_months)
+    input_df = spark.table(input_table)
+    if include_wells:
+        input_wells_df = input_df.filter(
+            (input_df.WellID.isin(include_wells)) 
+            & (~input_df.WellID.isin(exclude_wells))
+        )
+    else:
+        input_wells_df = input_df.filter(~input_df.WellID.isin(exclude_wells))
+    
+    filtered_df = filter_wells_by_min_months(input_wells_df, min_months)
 
     # Get list of wells to process
     wells_list = [
