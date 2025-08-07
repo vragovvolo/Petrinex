@@ -2,8 +2,8 @@ catalog: shm
 schema: petrinex
 api_url: "https://www.petrinex.gov.ab.ca/publicdata/API/Files/AB/"
 download_dir: "/Volumes/shm/petrinex/bronze"
-start_month_yyyy_mm: "2025-01"
-end_month_yyyy_mm: "2025-04"
+start_month_yyyy_mm: "2015-01"
+end_month_yyyy_mm: "2026-01"
 timeout_seconds: 30
 conventional:
   download: true

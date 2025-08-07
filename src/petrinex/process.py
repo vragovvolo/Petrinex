@@ -1,7 +1,7 @@
 import logging
 from typing import Dict, Optional, List, Tuple
 from pathlib import Path
-from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import DataFrame
 from pyspark.sql.functions import col, when, lit, to_timestamp, regexp_replace, trim
 from pyspark.sql.types import StringType, DoubleType, TimestampType
 
@@ -9,24 +9,15 @@ from petrinex.schemas import get_schema
 
 logger = logging.getLogger(__name__)
 
-
-def process_csv_to_bronze(config, dataset: str, spark) -> tuple:
+def process_csv_to_bronze(spark, config, dataset: str) -> tuple:
     """Simple CSV to Delta tables processing for local development."""
 
     assert dataset in ["conventional", "ngl"], "Invalid dataset"
     data_config = getattr(config, dataset)
 
-    csv_path = f"{config.download_dir}/{data_config.code.lower()}/*.CSV"
+    csv_path = f"{config.download_dir}/{dataset}/*.CSV"
     bronze_table = f"{config.catalog}.{config.schema}.{dataset}_bronze"
-    silver_table = f"{config.catalog}.{config.schema}.{dataset}_silver"
 
-    # Detect environment based on path
-    is_spark_env = "/Volumes/" in config.download_dir
-
-    logger.info(f"Processing {dataset}: {csv_path} -> {bronze_table}, {silver_table}")
-    logger.info(f"Environment: {'Spark/Production' if is_spark_env else 'Local'}")
-
-    # Read CSV files - handle local vs Spark environments differently
     schema = get_schema(data_config.code.lower(), "bronze")
 
     raw_df = spark.read.option("header", True).schema(schema).csv(csv_path)
@@ -37,7 +28,7 @@ def process_csv_to_bronze(config, dataset: str, spark) -> tuple:
     return bronze_df
 
 
-def process_bronze_to_silver(config, dataset: str, spark) -> tuple:
+def process_bronze_to_silver(spark, config, dataset: str) -> tuple:
     """Process bronze data to silver."""
     data_config = getattr(config, dataset)
     bronze_table = f"{config.catalog}.{config.schema}.{dataset}_bronze"
@@ -102,34 +93,17 @@ def _clean_ngl(df: DataFrame) -> DataFrame:
                 regexp_replace(col(col_name), r"[^\d.-]", "").cast(DoubleType()),
             )
 
-    # Clean key string columns
-    for col_name in ["OperatorBAID", "ReportingFacilityID", "WellID"]:
-        if col_name in df.columns:
-            df = df.withColumn(col_name, trim(col(col_name)))
-
-    return df
-
-
-def prepare_data_for_forecasting(spark, config, dataset: str = "ngl") -> DataFrame:
-    """Load silver data and clean for forecasting."""
-    # Detect environment based on path
-    is_spark_env = "/Volumes/" in config.download_dir
-
-    if is_spark_env:
-        # Production environment - read from Delta tables
-        table_name = f"{config.catalog}.{config.schema}.{dataset}_silver"
-        df = spark.table(table_name)
-    else:
-        # Local development - read from parquet files
-        parquet_path = f"../fixtures/{dataset}_silver.parquet"
-        df = spark.read.parquet(parquet_path)
-
-    # Just ensure production values are non-negative
+    # Ensure production values are non-negative
     production_cols = ["GasProduction", "OilProduction", "CondensateProduction"]
     for col_name in production_cols:
         if col_name in df.columns:
             df = df.withColumn(
                 col_name, when(col(col_name) < 0, lit(0.0)).otherwise(col(col_name))
             )
+
+    # Clean key string columns
+    for col_name in ["OperatorBAID", "ReportingFacilityID", "WellID"]:
+        if col_name in df.columns:
+            df = df.withColumn(col_name, trim(col(col_name)))
 
     return df
