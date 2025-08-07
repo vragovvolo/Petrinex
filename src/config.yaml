@@ -9,12 +9,12 @@ ingest:
     download: true
     code: "Vol"
     name: "Conventional Volumetric"
-    table_name: "ConventionalVolumetric"
+    table_name: "conv_vol_bronze"
   ngl:
     download: true
     code: "NGL"
     name: "NGL & Marketable Gas Volumes"
-    table_name: "NGLVolumetric"
+    table_name: "ngl_vol_bronze"
 process:
   conventional_table_name: ConventionalVolumetric
   ngl_table_name: NGLVolumetric

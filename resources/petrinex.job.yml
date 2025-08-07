@@ -18,6 +18,20 @@ resources:
           notebook_task:
             notebook_path: ../src/01_ingest.ipynb
 
+        - task_key: process
+          environment_key: default
+          notebook_task:
+            notebook_path: ../src/02_process.ipynb
+          depends_on:
+            - task_key: ingest
+
+        - task_key: forecast
+          environment_key: default
+          notebook_task:
+            notebook_path: ../src/03_forecast.ipynb
+          depends_on:
+            - task_key: process
+
       environments:
         - environment_key: default
           spec:

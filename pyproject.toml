@@ -10,13 +10,23 @@ requires-python = ">= 3.12.0"
 dependencies = [
     "databricks-connect==16.3.2",
     "databricks-dlt",
-    "mlflow==3.1.1"
+    "mlflow==3.1.1",
+    "pandas",
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "nbconvert>=7.16.6",
 ]
 
 [dependency-groups]
 dev = [
     "pytest",
-    "ipykernel"
+    "ipykernel",
+    "pytest-cov>=6.2.1",
+]
+streamlit = [
+    "streamlit",
+    "plotly"
 ]
 
 [tool.pytest.ini_options]

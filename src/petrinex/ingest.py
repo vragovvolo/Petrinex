@@ -9,9 +9,6 @@ import tempfile
 from io import BytesIO
 from typing import List
 
-from .config import PetrinexConfig, DatasetConfig
-
-# Set up logger
 logger = logging.getLogger(__name__)
 
 
@@ -66,7 +63,7 @@ def _generate_month_list(start_month: str, end_month: str) -> List[str]:
     return months_list
 
 
-def download_petrinex_data(config: PetrinexConfig, dataset: DatasetConfig) -> str:
+def download_petrinex_data(config, dataset) -> str:
     """
     Download Petrinex data for the specified dataset and date range.
 
