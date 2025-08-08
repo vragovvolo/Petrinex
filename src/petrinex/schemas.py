@@ -4,6 +4,7 @@ from pyspark.sql.types import (
     StringType,
     DoubleType,
     TimestampType,
+    IntegerType,
 )
 
 CONV_BRONZE_SCHEMA = StructType(
@@ -107,7 +108,8 @@ CONV_SILVER_SCHEMA = StructType(
     ]
 )
 
-NGL_SILVER_SCHEMA = StructType(
+# Calendar Silver: Monthly calendar data with cumulative production
+NGL_CALENDAR_SCHEMA = StructType(
     [
         StructField("ReportingFacilityID", StringType(), nullable=False),
         StructField("ReportingFacilityName", StringType(), nullable=True),
@@ -120,6 +122,7 @@ NGL_SILVER_SCHEMA = StructType(
         StructField("Pool", StringType(), nullable=True),
         StructField("Area", StringType(), nullable=True),
         StructField("Hours", DoubleType(), nullable=True),
+        # Monthly calendar volumes
         StructField("GasProduction", DoubleType(), nullable=True),
         StructField("OilProduction", DoubleType(), nullable=True),
         StructField("CondensateProduction", DoubleType(), nullable=True),
@@ -135,8 +138,65 @@ NGL_SILVER_SCHEMA = StructType(
         StructField("PentaneMixVolume", DoubleType(), nullable=True),
         StructField("PentaneSpecVolume", DoubleType(), nullable=True),
         StructField("LiteMixVolume", DoubleType(), nullable=True),
+        # Cumulative production from start of well
+        StructField("GasProductionCumulative", DoubleType(), nullable=True),
+        StructField("OilProductionCumulative", DoubleType(), nullable=True),
+        StructField("CondensateProductionCumulative", DoubleType(), nullable=True),
+        StructField("WaterProductionCumulative", DoubleType(), nullable=True),
+        StructField("HoursCumulative", DoubleType(), nullable=True),
+        StructField("DaysFromFirst", IntegerType(), nullable=True),
     ]
 )
+
+# Normalized Silver: 730-hour normalized periods with rates and estimated dates
+NGL_NORMALIZED_SCHEMA = StructType(
+    [
+        StructField("ReportingFacilityID", StringType(), nullable=False),
+        StructField("ReportingFacilityName", StringType(), nullable=True),
+        StructField("OperatorBAID", StringType(), nullable=False),
+        StructField("OperatorName", StringType(), nullable=True),
+        StructField("WellID", StringType(), nullable=False),
+        StructField("WellLicenseNumber", StringType(), nullable=True),
+        StructField("Field", StringType(), nullable=True),
+        StructField("Pool", StringType(), nullable=True),
+        StructField("Area", StringType(), nullable=True),
+        # Normalized period info
+        StructField(
+            "NormalizedPeriod", IntegerType(), nullable=False
+        ),  # 1, 2, 3... representing 730-hour periods
+        StructField(
+            "PeriodStartDate", TimestampType(), nullable=True
+        ),  # Estimated start date of this 730-hour period
+        StructField(
+            "PeriodEndDate", TimestampType(), nullable=True
+        ),  # Estimated end date of this 730-hour period
+        StructField(
+            "HoursInPeriod", DoubleType(), nullable=False
+        ),  # Should be 730 for complete periods
+        # Production for this 730-hour period (differential of cumulative)
+        StructField("GasProduction", DoubleType(), nullable=True),
+        StructField("OilProduction", DoubleType(), nullable=True),
+        StructField("CondensateProduction", DoubleType(), nullable=True),
+        StructField("WaterProduction", DoubleType(), nullable=True),
+        # Daily rates for this period
+        StructField("GasProductionDailyRate", DoubleType(), nullable=True),
+        StructField("OilProductionDailyRate", DoubleType(), nullable=True),
+        StructField("CondensateProductionDailyRate", DoubleType(), nullable=True),
+        StructField("WaterProductionDailyRate", DoubleType(), nullable=True),
+        # Cumulative from start of well
+        StructField("GasProductionCumulative", DoubleType(), nullable=True),
+        StructField("OilProductionCumulative", DoubleType(), nullable=True),
+        StructField("CondensateProductionCumulative", DoubleType(), nullable=True),
+        StructField("WaterProductionCumulative", DoubleType(), nullable=True),
+        StructField("HoursCumulative", DoubleType(), nullable=True),
+        StructField(
+            "DaysFromFirstProducing", IntegerType(), nullable=True
+        ),  # Days from first production
+    ]
+)
+
+# Legacy silver schema (kept for compatibility)
+NGL_SILVER_SCHEMA = NGL_CALENDAR_SCHEMA
 
 
 def get_schema(table_code: str, layer: str = "bronze") -> StructType:
@@ -144,7 +204,7 @@ def get_schema(table_code: str, layer: str = "bronze") -> StructType:
     Get the appropriate schema for a table type and layer.
 
     Args:
-        table_code: Type of table ('vol' or 'ngl')
+        table_code: Type of table ('vol', 'ngl', 'ngl_calendar', 'ngl_normalized')
         layer: Data layer ('bronze' or 'silver')
 
     Returns:
@@ -157,7 +217,13 @@ def get_schema(table_code: str, layer: str = "bronze") -> StructType:
         },
         "ngl": {
             "bronze": NGL_BRONZE_SCHEMA,
-            "silver": NGL_SILVER_SCHEMA,
+            "silver": NGL_SILVER_SCHEMA,  # This is now the calendar schema
+        },
+        "ngl_calendar": {
+            "silver": NGL_CALENDAR_SCHEMA,
+        },
+        "ngl_normalized": {
+            "silver": NGL_NORMALIZED_SCHEMA,
         },
     }
 

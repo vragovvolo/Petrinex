@@ -2,8 +2,8 @@ catalog: shm
 schema: petrinex
 api_url: "https://www.petrinex.gov.ab.ca/publicdata/API/Files/AB/"
 download_dir: "/Volumes/shm/petrinex/bronze"
-start_month_yyyy_mm: "2015-01"
-end_month_yyyy_mm: "2026-01"
+start_month_yyyy_mm: "2024-01"
+end_month_yyyy_mm: "2024-03"
 timeout_seconds: 30
 conventional:
   download: true
@@ -34,5 +34,3 @@ forecast:
     - ABWI100011906018W500
   exclude_wells:
     - ABWI100011906018W500
-
-

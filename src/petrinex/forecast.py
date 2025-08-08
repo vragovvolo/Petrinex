@@ -16,6 +16,8 @@ import pandas as pd
 from scipy.optimize import curve_fit, OptimizeWarning
 
 from pyspark.sql import SparkSession, DataFrame
+from petrinex.utils import table_exists
+from petrinex.process import build_ngl_calendar_and_normalized_tables
 from pyspark.sql.functions import col, count, lit, when
 from pyspark.sql.types import (
     StructType,
@@ -99,6 +101,7 @@ def fit_arps_curve(
     well_data: pd.DataFrame,
     production_column: str = "OilProduction",
     curve_type: str = "auto",
+    min_r_squared: float = 0.3,
 ) -> Dict:
     """
     Fit ARPS decline curve to well production data.
@@ -107,18 +110,25 @@ def fit_arps_curve(
         well_data: DataFrame with production data for a single well
         production_column: Column name for production values
         curve_type: Type of curve to fit ('exponential', 'hyperbolic', 'harmonic', 'auto')
+        min_r_squared: Minimum R-squared threshold for acceptable fits
 
     Returns:
         Dictionary with fit parameters, statistics, and forecast function
     """
+    well_id = (
+        well_data["WellID"].iloc[0] if "WellID" in well_data.columns else "Unknown"
+    )
+
     # Prepare data
     data = well_data.copy().sort_values("DaysFromFirst")
 
     # Filter out zero/negative production values
     data = data[data[production_column] > 0]
 
-    if len(data) < 5:  # Increased minimum points for better fits
-        logger.warning(f"Insufficient data points for curve fitting: {len(data)}")
+    if len(data) < 8:  # Need more points for robust decline curve fitting
+        logger.info(
+            f"Well {well_id}: Insufficient data points for {production_column} curve fitting: {len(data)} points (need ≥8)"
+        )
         return {
             "success": False,
             "error": "Insufficient data points",
@@ -128,24 +138,33 @@ def fit_arps_curve(
             "forecast_func": None,
         }
 
-    # Identify peak production and fit from peak forward
-    q_values = data[production_column].values
-    peak_idx = np.argmax(q_values)
+    # Better peak detection using rolling average to handle volatility
+    window_size = min(6, len(data) // 4)  # Use 6-month or 25% of data window
+    if window_size >= 3:
+        rolling_avg = (
+            data[production_column].rolling(window=window_size, center=True).mean()
+        )
+        peak_idx = rolling_avg.idxmax()
+        peak_idx = data.index.get_loc(peak_idx)
+    else:
+        peak_idx = np.argmax(data[production_column].values)
 
-    # Only use data from peak production onward for decline curve fitting
-    # This handles wells with initial ramp-up periods
-    if peak_idx < len(data) - 3:  # Need at least 3 points after peak
+    # Use data from peak onward, but ensure we have enough decline period
+    min_decline_points = max(6, len(data) // 3)  # Need substantial decline data
+    if peak_idx < len(data) - min_decline_points:
         decline_data = data.iloc[peak_idx:].copy()
     else:
-        # If peak is too late, use all data but check for decline pattern
-        decline_data = data.copy()
+        # If peak is too late, use more of the data but skip early ramp-up
+        start_idx = min(peak_idx // 2, len(data) - min_decline_points)
+        decline_data = data.iloc[start_idx:].copy()
 
-    # Check if data shows actual decline pattern
     q_decline = decline_data[production_column].values
     t_decline = decline_data["DaysFromFirst"].values
 
-    if len(q_decline) < 3:
-        logger.warning(f"Insufficient decline data points: {len(q_decline)}")
+    if len(q_decline) < 6:
+        logger.info(
+            f"Well {well_id}: Insufficient decline data for {production_column}: {len(q_decline)} points (need ≥6)"
+        )
         return {
             "success": False,
             "error": "Insufficient decline data points",
@@ -155,11 +174,25 @@ def fit_arps_curve(
             "forecast_func": None,
         }
 
-    # Check for minimum decline - if final production is > 80% of peak, likely no decline
-    decline_ratio = q_decline[-1] / q_decline[0] if q_decline[0] > 0 else 1.0
-    if decline_ratio > 0.8:
-        logger.warning(
-            f"Insufficient decline observed (final/peak = {decline_ratio:.3f})"
+    # More sophisticated decline detection using trend analysis
+    # Check both overall decline and sustained decline trend
+    overall_decline = q_decline[-1] / q_decline[0] if q_decline[0] > 0 else 1.0
+
+    # Also check if last third shows decline compared to first third
+    third_size = len(q_decline) // 3
+    if third_size >= 2:
+        early_avg = np.mean(q_decline[:third_size])
+        late_avg = np.mean(q_decline[-third_size:])
+        trend_decline = late_avg / early_avg if early_avg > 0 else 1.0
+    else:
+        trend_decline = overall_decline
+
+    # Use the more conservative (smaller) decline ratio
+    decline_ratio = min(overall_decline, trend_decline)
+
+    if decline_ratio > 0.7:  # More permissive threshold
+        logger.info(
+            f"Well {well_id}: No significant decline in {production_column} (overall={overall_decline:.3f}, trend={trend_decline:.3f})"
         )
         return {
             "success": False,
@@ -170,19 +203,35 @@ def fit_arps_curve(
             "forecast_func": None,
         }
 
-    # Remove outliers using IQR method
+    logger.debug(
+        f"Well {well_id}: {production_column} decline analysis - overall={overall_decline:.3f}, trend={trend_decline:.3f}, using {len(q_decline)} points"
+    )
+
+    # With normalized data (no downtime), outlier removal can be more conservative
+    # Use simple IQR-based outlier detection without smoothing
     Q1 = np.percentile(q_decline, 25)
     Q3 = np.percentile(q_decline, 75)
     IQR = Q3 - Q1
-    outlier_mask = (q_decline >= Q1 - 1.5 * IQR) & (q_decline <= Q3 + 1.5 * IQR)
 
-    if np.sum(outlier_mask) < 3:
-        # If too many outliers removed, use original data
+    # Conservative outlier bounds - only remove extreme outliers
+    outlier_mask = (q_decline >= Q1 - 2.5 * IQR) & (q_decline <= Q3 + 2.5 * IQR)
+    outliers_removed = len(q_decline) - np.sum(outlier_mask)
+
+    if np.sum(outlier_mask) < len(q_decline) * 0.8:  # Keep at least 80% of data
+        # If too many outliers would be removed, keep all data
+        logger.debug(
+            f"Well {well_id}: {outliers_removed} potential outliers detected but keeping all normalized data"
+        )
         t = t_decline
         q = q_decline
     else:
+        # Remove only extreme outliers
         t = t_decline[outlier_mask]
         q = q_decline[outlier_mask]
+        if outliers_removed > 0:
+            logger.debug(
+                f"Well {well_id}: Removed {outliers_removed} extreme outliers from normalized {production_column} data"
+            )
 
     # Adjust time to start from 0 for fitting
     t_fit = t - t[0]
@@ -410,20 +459,75 @@ def fit_arps_curve(
 
         results["harmonic"] = best_har_result
 
-    # Select best curve if auto mode
-    if curve_type == "auto":
-        # Use AIC for model selection (lower is better)
-        best_curve = min(results.keys(), key=lambda k: results[k].get("aic", np.inf))
-    else:
-        best_curve = curve_type
+    # Select best curve with improved criteria
+    valid_results = {
+        k: v for k, v in results.items() if v.get("r_squared", -np.inf) > 0
+    }
 
-    if best_curve not in results or results[best_curve]["r_squared"] == -np.inf:
+    if not valid_results:
+        logger.info(
+            f"Well {well_id}: All {production_column} curve fits failed - no valid results"
+        )
         return {
             "success": False,
             "error": "All curve fits failed",
             "curve_type": None,
             "parameters": {},
             "r_squared": 0,
+            "forecast_func": None,
+        }
+
+    if curve_type == "auto":
+        # For auto mode, prefer log-linear exponential if good enough, otherwise use AIC
+        if "exponential" in valid_results:
+            exp_result = valid_results["exponential"]
+            if (
+                exp_result.get("method") == "log-linear"
+                and exp_result["r_squared"] >= 0.4
+            ):
+                best_curve = "exponential"
+                logger.debug(
+                    f"Well {well_id}: Selected log-linear exponential fit (R²={exp_result['r_squared']:.3f})"
+                )
+            else:
+                # Use AIC for model selection (lower is better)
+                best_curve = min(
+                    valid_results.keys(),
+                    key=lambda k: valid_results[k].get("aic", np.inf),
+                )
+                logger.debug(f"Well {well_id}: Selected {best_curve} based on AIC")
+        else:
+            best_curve = min(
+                valid_results.keys(), key=lambda k: valid_results[k].get("aic", np.inf)
+            )
+            logger.debug(f"Well {well_id}: Selected {best_curve} based on AIC")
+    else:
+        best_curve = curve_type
+        if best_curve not in valid_results:
+            logger.info(
+                f"Well {well_id}: Requested {curve_type} fit failed for {production_column}"
+            )
+            return {
+                "success": False,
+                "error": f"{curve_type} curve fit failed",
+                "curve_type": None,
+                "parameters": {},
+                "r_squared": 0,
+                "forecast_func": None,
+            }
+
+    # Check if the best result meets minimum quality threshold
+    best_result = valid_results[best_curve]
+    if best_result["r_squared"] < min_r_squared:
+        logger.info(
+            f"Well {well_id}: Best {production_column} fit ({best_curve}) R²={best_result['r_squared']:.3f} below threshold {min_r_squared}"
+        )
+        return {
+            "success": False,
+            "error": f"Best fit R² ({best_result['r_squared']:.3f}) below threshold ({min_r_squared})",
+            "curve_type": best_curve,
+            "parameters": best_result["parameters"],
+            "r_squared": best_result["r_squared"],
             "forecast_func": None,
         }
 
@@ -443,6 +547,14 @@ def fit_arps_curve(
         forecast_func = lambda t_future: harmonic_decline(
             t_future - t_offset, params["qi"], params["di"]
         )
+
+    # Log successful fit
+    final_r2 = results[best_curve]["r_squared"]
+    method_info = results[best_curve].get("method", "")
+    method_str = f" ({method_info})" if method_info else ""
+    logger.info(
+        f"Well {well_id}: Successful {production_column} forecast - {best_curve}{method_str} curve, R²={final_r2:.3f}"
+    )
 
     return {
         "success": True,
@@ -477,6 +589,7 @@ def forecast_well_production(
     forecast_months: int = 24,
     production_column: str = "OilProduction",
     curve_type: str = "auto",
+    min_r_squared: float = 0.3,
 ) -> Dict:
     """
     Forecast production for a single well using ARPS decline curves.
@@ -486,12 +599,13 @@ def forecast_well_production(
         forecast_months: Number of months to forecast
         production_column: Column name for production values
         curve_type: Type of ARPS curve to fit
+        min_r_squared: Minimum R-squared threshold for acceptable fits
 
     Returns:
         Dictionary with historical data, fitted curve, and forecast
     """
     # Fit decline curve
-    fit_result = fit_arps_curve(well_data, production_column, curve_type)
+    fit_result = fit_arps_curve(well_data, production_column, curve_type, min_r_squared)
 
     if not fit_result["success"]:
         return {
@@ -507,7 +621,9 @@ def forecast_well_production(
         last_day + 30,  # Start 30 days after last data point
         last_day + (forecast_months * 30.44),  # Average days per month
         30.44,
-    )
+    ).astype(
+        int
+    )  # Convert to integers for schema compatibility
 
     # Generate forecast
     forecast_production = fit_result["forecast_func"](forecast_days)
@@ -574,10 +690,10 @@ def forecast_multiple_wells(
 
         try:
             result = forecast_well_production(
-                well_data, forecast_months, production_column, curve_type
+                well_data, forecast_months, production_column, curve_type, min_r_squared
             )
 
-            if result["success"] and result["r_squared"] >= min_r_squared:
+            if result["success"]:
                 results[well_id] = result
                 logger.debug(
                     f"Well {well_id}: {result['curve_type']} fit, R² = {result['r_squared']:.3f}"
@@ -661,9 +777,11 @@ def export_forecast_summary_table(
             "RSquared": forecast["r_squared"],
             "FitSuccess": forecast["success"],
             # All ARPS parameters (qi, di, b)
-            "InitialRate_qi": params.get("qi", None),
-            "DeclineRate_di": params.get("di", None),
-            "DeclineExponent_b": params.get("b", None),
+            "InitialRate_qi": params.get("qi", 0.0),
+            "DeclineRate_di": params.get("di", 0.0),
+            "DeclineExponent_b": params.get(
+                "b", 0.0
+            ),  # Use 0.0 for exponential/harmonic curves
             # Historical data date range
             "HistoricalDataMinDate": min_date,
             "HistoricalDataMaxDate": max_date,
@@ -678,8 +796,8 @@ def export_forecast_summary_table(
             ),
             "ForecastCumulative12Month": cum_forecast_12m,
             # Additional fit quality metrics
-            "AIC": forecast.get("aic", None),
-            "FitError": forecast.get("error", None),
+            "AIC": forecast.get("aic", 0.0),
+            "FitError": forecast.get("error", ""),
         }
 
         summary_data.append(summary_row)
@@ -813,15 +931,21 @@ def combine_historical_and_forecast(
     # Add missing columns with default values
     for col in forecast_cols - hist_cols:
         if col not in ["DataType", "ForecastMethod", "ForecastRSquared"]:
-            historical_data[col] = (
-                0.0 if col.endswith(("Production", "Volume", "Energy", "Hours")) else ""
-            )
+            if col == "DaysFromFirst":
+                historical_data[col] = 0  # Integer default for DaysFromFirst
+            elif col.endswith(("Production", "Volume", "Energy", "Hours")):
+                historical_data[col] = 0.0
+            else:
+                historical_data[col] = ""
 
     for col in hist_cols - forecast_cols:
         if col not in ["DataType", "ForecastMethod", "ForecastRSquared"]:
-            forecast_data[col] = (
-                0.0 if col.endswith(("Production", "Volume", "Energy", "Hours")) else ""
-            )
+            if col == "DaysFromFirst":
+                forecast_data[col] = 0  # Integer default for DaysFromFirst
+            elif col.endswith(("Production", "Volume", "Energy", "Hours")):
+                forecast_data[col] = 0.0
+            else:
+                forecast_data[col] = ""
 
     # Combine the data, handling empty DataFrames and dtype consistency
     if historical_data.empty and forecast_data.empty:
@@ -856,11 +980,19 @@ def combine_historical_and_forecast(
     # Sort by well and date
     combined_data = combined_data.sort_values(["WellID", "ProductionMonth"])
 
+    # Ensure DaysFromFirst is integer type for schema compatibility
+    if "DaysFromFirst" in combined_data.columns:
+        combined_data["DaysFromFirst"] = combined_data["DaysFromFirst"].astype(int)
+
     return combined_data
 
 
 def forecast_spark_workflow(
-    spark: SparkSession, config, input_table: str, **kwargs
+    spark: SparkSession,
+    config,
+    input_table: str = None,
+    use_normalized: bool = True,
+    **kwargs,
 ) -> Dict[str, str]:
     """
     Spark-based forecasting workflow with memory-efficient batch processing.
@@ -868,37 +1000,96 @@ def forecast_spark_workflow(
     Args:
         spark: SparkSession
         config: Config object with forecast settings
-        input_table: Full table name (catalog.schema.table) for input data
+        input_table: Full table name (catalog.schema.table) for input data.
+                    If None and use_normalized=True, uses normalized table
+        use_normalized: Whether to use normalized production data for better decline analysis
 
 
     Returns:
         Dictionary mapping production types to output table names
     """
-    
-    forecast_months = getattr(config.forecast, "forecast_months", 30)
-    
-    min_months = getattr(config.forecast, "forecast_months", 30)
+
+    forecast_months = getattr(config.forecast, "horizon_months", 30)
+
+    min_months = getattr(config.forecast, "min_months", 6)
     production_columns = getattr(
-        config.ngl, 
+        config.ngl,
         "production_columns",
-        ['OilProduction','GasProduction', 'CondensateProduction']
-        )
+        ["OilProduction", "GasProduction", "CondensateProduction"],
+    )
     curve_type = getattr(config.forecast, "curve_type", "auto")
     min_r_squared = getattr(config.forecast, "min_r_squared", 0.3)
     include_wells = getattr(config.forecast, "include_wells", [])
     exclude_wells = getattr(config.forecast, "exclude_wells", [])
     batch_size = getattr(config.forecast, "batch_size", 500)
 
+    # Determine input table to use and ensure prerequisites exist
+    if input_table is None:
+        if use_normalized:
+            normalized_table = f"{config.catalog}.{config.schema}.ngl_normalized"
+            calendar_table = f"{config.catalog}.{config.schema}.ngl_calendar"
+
+            # Build normalized/calendar if missing
+            if not table_exists(spark, normalized_table) or not table_exists(
+                spark, calendar_table
+            ):
+                logger.info(
+                    "Building calendar and normalized tables prior to forecasting"
+                )
+                build_ngl_calendar_and_normalized_tables(spark, config)
+
+            if table_exists(spark, normalized_table):
+                input_table = normalized_table
+                logger.info(
+                    "Using normalized production data for improved decline curve analysis"
+                )
+            else:
+                # Fallback to base silver
+                input_table = f"{config.catalog}.{config.schema}.ngl_silver"
+                logger.warning(
+                    "Normalized table not available; falling back to NGL silver"
+                )
+        else:
+            input_table = f"{config.catalog}.{config.schema}.ngl_silver"
+            logger.info("Using standard NGL silver table")
+    else:
+        logger.info(f"Using specified input table: {input_table}")
+
     # Load and filter the Spark table
     input_df = spark.table(input_table)
+
+    # When using normalized data, use the daily rate columns for forecasting
+    if use_normalized and "normalized" in input_table.lower():
+        # Map production columns to their daily rate equivalents
+        production_column_mapping = {}
+        for prod_col in production_columns:
+            if prod_col + "DailyRate" in [f.name for f in input_df.schema.fields]:
+                production_column_mapping[prod_col] = prod_col + "DailyRate"
+                logger.info(f"Using {prod_col}DailyRate for {prod_col} forecasting")
+            else:
+                production_column_mapping[prod_col] = prod_col
+                logger.warning(
+                    f"Daily rate column not found for {prod_col}, using original"
+                )
+
+        # Use DaysFromFirstProducing instead of DaysFromFirst for normalized data
+        time_column = (
+            "DaysFromFirstProducing"
+            if "DaysFromFirstProducing" in [f.name for f in input_df.schema.fields]
+            else "DaysFromFirst"
+        )
+        logger.info(f"Using {time_column} for time-based analysis")
+    else:
+        production_column_mapping = {col: col for col in production_columns}
+        time_column = "DaysFromFirst"
     if include_wells:
         input_wells_df = input_df.filter(
-            (input_df.WellID.isin(include_wells)) 
+            (input_df.WellID.isin(include_wells))
             & (~input_df.WellID.isin(exclude_wells))
         )
     else:
         input_wells_df = input_df.filter(~input_df.WellID.isin(exclude_wells))
-    
+
     filtered_df = filter_wells_by_min_months(input_wells_df, min_months)
 
     # Get list of wells to process
@@ -911,6 +1102,12 @@ def forecast_spark_workflow(
 
     # Process each production type
     for production_type in production_columns:
+        # Get the actual column name to use for forecasting
+        actual_production_column = production_column_mapping[production_type]
+        logger.info(
+            f"Processing {production_type} using column {actual_production_column}"
+        )
+
         all_summaries = []
         all_forecasts = []
         all_combined = []
@@ -926,11 +1123,23 @@ def forecast_spark_workflow(
             if batch_pandas_df.empty:
                 continue
 
-            # Run forecasting on this batch
+            # Ensure the time column is named correctly for the forecast functions
+            if (
+                time_column != "DaysFromFirst"
+                and time_column in batch_pandas_df.columns
+            ):
+                # Drop any existing DaysFromFirst column to avoid conflicts
+                if "DaysFromFirst" in batch_pandas_df.columns:
+                    batch_pandas_df = batch_pandas_df.drop(columns=["DaysFromFirst"])
+                batch_pandas_df = batch_pandas_df.rename(
+                    columns={time_column: "DaysFromFirst"}
+                )
+
+            # Run forecasting on this batch using the mapped production column
             batch_forecasts = forecast_multiple_wells(
                 batch_pandas_df,
                 forecast_months=forecast_months,
-                production_column=production_type,
+                production_column=actual_production_column,
                 curve_type=curve_type,
                 min_r_squared=min_r_squared,
             )
@@ -939,14 +1148,15 @@ def forecast_spark_workflow(
                 continue
 
             # Generate tables for this batch
+            # Pass the actual column name used for forecasting
             batch_summary = export_forecast_summary_table(
-                batch_forecasts, production_type
+                batch_forecasts, actual_production_column
             )
             batch_forecast_production = export_forecasted_production_table(
-                batch_forecasts, production_type, batch_pandas_df
+                batch_forecasts, actual_production_column, batch_pandas_df
             )
             batch_combined = combine_historical_and_forecast(
-                batch_pandas_df, batch_forecast_production, production_type
+                batch_pandas_df, batch_forecast_production, actual_production_column
             )
 
             # Collect batch results
@@ -957,21 +1167,33 @@ def forecast_spark_workflow(
             if len(batch_combined) > 0:
                 all_combined.append(batch_combined)
 
+        # Initialize table names
+        summary_table_name = f"{config.catalog}.{config.schema}.{production_type.lower()}_forecast_summary"
+        forecast_table_name = f"{config.catalog}.{config.schema}.{production_type.lower()}_forecasted_production"
+        combined_table_name = f"{config.catalog}.{config.schema}.{production_type.lower()}_historical_forecast_combined"
+
         # Combine all batch results and write to tables
+        # Always create tables, even if empty
         if all_summaries:
             final_summary = pd.concat(all_summaries, ignore_index=True)
-            summary_table_name = f"{config.catalog}.{config.schema}.{production_type.lower()}_forecast_summary"
-            _write_pandas_to_spark_table(spark, final_summary, summary_table_name)
+        else:
+            # Create empty summary table with proper schema
+            final_summary = _create_empty_summary_table(production_type)
+        _write_pandas_to_spark_table(spark, final_summary, summary_table_name)
 
         if all_forecasts:
             final_forecasts = pd.concat(all_forecasts, ignore_index=True)
-            forecast_table_name = f"{config.catalog}.{config.schema}.{production_type.lower()}_forecasted_production"
-            _write_pandas_to_spark_table(spark, final_forecasts, forecast_table_name)
+        else:
+            # Create empty forecast table with proper schema
+            final_forecasts = _create_empty_forecast_table(production_type)
+        _write_pandas_to_spark_table(spark, final_forecasts, forecast_table_name)
 
         if all_combined:
             final_combined = pd.concat(all_combined, ignore_index=True)
-            combined_table_name = f"{config.catalog}.{config.schema}.{production_type.lower()}_historical_forecast_combined"
-            _write_pandas_to_spark_table(spark, final_combined, combined_table_name)
+        else:
+            # Create empty combined table with proper schema
+            final_combined = _create_empty_combined_table(production_type)
+        _write_pandas_to_spark_table(spark, final_combined, combined_table_name)
 
         output_tables[production_type] = {
             "summary": summary_table_name,
@@ -980,6 +1202,110 @@ def forecast_spark_workflow(
         }
 
     return output_tables
+
+
+def _create_empty_summary_table(production_type: str) -> pd.DataFrame:
+    """Create an empty summary table with proper schema."""
+    import datetime as dt
+
+    return pd.DataFrame(
+        {
+            "WellID": pd.Series([], dtype="string"),
+            "ProductionType": pd.Series([], dtype="string"),
+            "ForecastDate": pd.Series([], dtype="string"),
+            "CurveType": pd.Series([], dtype="string"),
+            "RSquared": pd.Series([], dtype="float64"),
+            "FitSuccess": pd.Series([], dtype="bool"),
+            "InitialRate_qi": pd.Series([], dtype="float64"),
+            "DeclineRate_di": pd.Series([], dtype="float64"),
+            "DeclineExponent_b": pd.Series([], dtype="float64"),
+            "HistoricalDataMinDate": pd.Series([], dtype="datetime64[ns]"),
+            "HistoricalDataMaxDate": pd.Series([], dtype="datetime64[ns]"),
+            "DataPointsUsed": pd.Series([], dtype="int32"),
+            "HistoricalAvgProduction": pd.Series([], dtype="float64"),
+            "HistoricalPeakProduction": pd.Series([], dtype="float64"),
+            "HistoricalLastProduction": pd.Series([], dtype="float64"),
+            "ForecastStartDate": pd.Series([], dtype="datetime64[ns]"),
+            "ForecastCumulative12Month": pd.Series([], dtype="float64"),
+            "AIC": pd.Series([], dtype="float64"),
+            "FitError": pd.Series([], dtype="string"),
+        }
+    )
+
+
+def _create_empty_forecast_table(production_type: str) -> pd.DataFrame:
+    """Create an empty forecast table with proper schema matching NGL silver."""
+    return pd.DataFrame(
+        {
+            "WellID": pd.Series([], dtype="string"),
+            "ProductionMonth": pd.Series([], dtype="datetime64[ns]"),
+            "OilProduction": pd.Series([], dtype="float64"),
+            "GasProduction": pd.Series([], dtype="float64"),
+            "CondensateProduction": pd.Series([], dtype="float64"),
+            "WaterProduction": pd.Series([], dtype="float64"),
+            "ResidueGasVolume": pd.Series([], dtype="float64"),
+            "Energy": pd.Series([], dtype="float64"),
+            "EthaneMixVolume": pd.Series([], dtype="float64"),
+            "EthaneSpecVolume": pd.Series([], dtype="float64"),
+            "PropaneMixVolume": pd.Series([], dtype="float64"),
+            "PropaneSpecVolume": pd.Series([], dtype="float64"),
+            "ButaneMixVolume": pd.Series([], dtype="float64"),
+            "ButaneSpecVolume": pd.Series([], dtype="float64"),
+            "PentaneMixVolume": pd.Series([], dtype="float64"),
+            "PentaneSpecVolume": pd.Series([], dtype="float64"),
+            "LiteMixVolume": pd.Series([], dtype="float64"),
+            "ReportingFacilityID": pd.Series([], dtype="string"),
+            "ReportingFacilityName": pd.Series([], dtype="string"),
+            "OperatorBAID": pd.Series([], dtype="string"),
+            "OperatorName": pd.Series([], dtype="string"),
+            "WellLicenseNumber": pd.Series([], dtype="string"),
+            "Field": pd.Series([], dtype="string"),
+            "Pool": pd.Series([], dtype="string"),
+            "Area": pd.Series([], dtype="string"),
+            "Hours": pd.Series([], dtype="float64"),
+            "DataType": pd.Series([], dtype="string"),
+            "ForecastMethod": pd.Series([], dtype="string"),
+            "ForecastRSquared": pd.Series([], dtype="float64"),
+        }
+    )
+
+
+def _create_empty_combined_table(production_type: str) -> pd.DataFrame:
+    """Create an empty combined table with proper schema."""
+    return pd.DataFrame(
+        {
+            "WellID": pd.Series([], dtype="string"),
+            "ProductionMonth": pd.Series([], dtype="datetime64[ns]"),
+            "OilProduction": pd.Series([], dtype="float64"),
+            "GasProduction": pd.Series([], dtype="float64"),
+            "CondensateProduction": pd.Series([], dtype="float64"),
+            "WaterProduction": pd.Series([], dtype="float64"),
+            "ResidueGasVolume": pd.Series([], dtype="float64"),
+            "Energy": pd.Series([], dtype="float64"),
+            "EthaneMixVolume": pd.Series([], dtype="float64"),
+            "EthaneSpecVolume": pd.Series([], dtype="float64"),
+            "PropaneMixVolume": pd.Series([], dtype="float64"),
+            "PropaneSpecVolume": pd.Series([], dtype="float64"),
+            "ButaneMixVolume": pd.Series([], dtype="float64"),
+            "ButaneSpecVolume": pd.Series([], dtype="float64"),
+            "PentaneMixVolume": pd.Series([], dtype="float64"),
+            "PentaneSpecVolume": pd.Series([], dtype="float64"),
+            "LiteMixVolume": pd.Series([], dtype="float64"),
+            "ReportingFacilityID": pd.Series([], dtype="string"),
+            "ReportingFacilityName": pd.Series([], dtype="string"),
+            "OperatorBAID": pd.Series([], dtype="string"),
+            "OperatorName": pd.Series([], dtype="string"),
+            "WellLicenseNumber": pd.Series([], dtype="string"),
+            "Field": pd.Series([], dtype="string"),
+            "Pool": pd.Series([], dtype="string"),
+            "Area": pd.Series([], dtype="string"),
+            "Hours": pd.Series([], dtype="float64"),
+            "DaysFromFirst": pd.Series([], dtype="int32"),
+            "DataType": pd.Series([], dtype="string"),
+            "ForecastMethod": pd.Series([], dtype="string"),
+            "ForecastRSquared": pd.Series([], dtype="float64"),
+        }
+    )
 
 
 def _write_pandas_to_spark_table(
@@ -998,10 +1324,43 @@ def _write_pandas_to_spark_table(
         mode: Write mode ('overwrite', 'append', etc.)
     """
     if pandas_df.empty:
-        return
+        # For empty DataFrames, we need to provide schema explicitly
+        # Create a Spark DataFrame with the same schema as the pandas DataFrame
+        from pyspark.sql.types import (
+            StructType,
+            StructField,
+            StringType,
+            DoubleType,
+            TimestampType,
+            IntegerType,
+            BooleanType,
+        )
 
-    # Convert Pandas DataFrame to Spark DataFrame
-    spark_df = spark.createDataFrame(pandas_df)
+        spark_fields = []
+        for col_name in pandas_df.columns:
+            dtype = pandas_df[col_name].dtype
+            if dtype == "object" or dtype == "string":
+                spark_type = StringType()
+            elif dtype == "float64":
+                spark_type = DoubleType()
+            elif dtype == "int64":
+                spark_type = IntegerType()
+            elif dtype == "bool":
+                spark_type = BooleanType()
+            elif dtype == "datetime64[ns]":
+                spark_type = TimestampType()
+            else:
+                spark_type = StringType()  # Default fallback
 
-    # Write to table
-    spark_df.write.mode(mode).option("mergeSchema", "true").saveAsTable(table_name)
+            spark_fields.append(StructField(col_name, spark_type, True))
+
+        schema = StructType(spark_fields)
+        spark_df = spark.createDataFrame([], schema)
+    else:
+        # Convert Pandas DataFrame to Spark DataFrame
+        spark_df = spark.createDataFrame(pandas_df)
+
+    # Write to table with overwrite mode to handle existing tables
+    spark_df.write.mode("overwrite").option("mergeSchema", "true").saveAsTable(
+        table_name
+    )

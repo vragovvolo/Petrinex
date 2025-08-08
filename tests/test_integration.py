@@ -154,6 +154,120 @@ def test_csv_to_forecast_pipeline():
     assert True, "End-to-end pipeline test completed"
 
 
+def test_calendar_and_normalized_minimal(spark):
+    """Minimal Spark test to validate calendar and normalized computations."""
+    from pyspark.sql import Row
+    from petrinex.process import compute_ngl_calendar, compute_ngl_normalized
+
+    # Create minimal base silver-like data for one well spanning 3 months
+    base_rows = [
+        Row(
+            ReportingFacilityID="FAC1",
+            ReportingFacilityName="F1",
+            OperatorBAID="OP1",
+            OperatorName="Operator",
+            ProductionMonth=pd.Timestamp("2024-01-01"),
+            WellID="W1",
+            WellLicenseNumber="LIC1",
+            Field="F",
+            Pool="P",
+            Area="A",
+            Hours=730.0,
+            GasProduction=100.0,
+            OilProduction=10.0,
+            CondensateProduction=5.0,
+            WaterProduction=1.0,
+            ResidueGasVolume=None,
+            Energy=None,
+            EthaneMixVolume=None,
+            EthaneSpecVolume=None,
+            PropaneMixVolume=None,
+            PropaneSpecVolume=None,
+            ButaneMixVolume=None,
+            ButaneSpecVolume=None,
+            PentaneMixVolume=None,
+            PentaneSpecVolume=None,
+            LiteMixVolume=None,
+        ),
+        Row(
+            ReportingFacilityID="FAC1",
+            ReportingFacilityName="F1",
+            OperatorBAID="OP1",
+            OperatorName="Operator",
+            ProductionMonth=pd.Timestamp("2024-02-01"),
+            WellID="W1",
+            WellLicenseNumber="LIC1",
+            Field="F",
+            Pool="P",
+            Area="A",
+            Hours=730.0,
+            GasProduction=80.0,
+            OilProduction=8.0,
+            CondensateProduction=4.0,
+            WaterProduction=1.0,
+            ResidueGasVolume=None,
+            Energy=None,
+            EthaneMixVolume=None,
+            EthaneSpecVolume=None,
+            PropaneMixVolume=None,
+            PropaneSpecVolume=None,
+            ButaneMixVolume=None,
+            ButaneSpecVolume=None,
+            PentaneMixVolume=None,
+            PentaneSpecVolume=None,
+            LiteMixVolume=None,
+        ),
+        Row(
+            ReportingFacilityID="FAC1",
+            ReportingFacilityName="F1",
+            OperatorBAID="OP1",
+            OperatorName="Operator",
+            ProductionMonth=pd.Timestamp("2024-03-01"),
+            WellID="W1",
+            WellLicenseNumber="LIC1",
+            Field="F",
+            Pool="P",
+            Area="A",
+            Hours=730.0,
+            GasProduction=60.0,
+            OilProduction=6.0,
+            CondensateProduction=3.0,
+            WaterProduction=1.0,
+            ResidueGasVolume=None,
+            Energy=None,
+            EthaneMixVolume=None,
+            EthaneSpecVolume=None,
+            PropaneMixVolume=None,
+            PropaneSpecVolume=None,
+            ButaneMixVolume=None,
+            ButaneSpecVolume=None,
+            PentaneMixVolume=None,
+            PentaneSpecVolume=None,
+            LiteMixVolume=None,
+        ),
+    ]
+
+    base_df = spark.createDataFrame(base_rows)
+
+    # Compute calendar
+    calendar_df = compute_ngl_calendar(base_df)
+    cal = calendar_df.orderBy("ProductionMonth").toPandas()
+
+    # Validate cumulative logic
+    assert list(cal["GasProductionCumulative"]) == [100.0, 180.0, 240.0]
+    assert list(cal["HoursCumulative"]) == [730.0, 1460.0, 2190.0]
+
+    # Compute normalized (should create 2 periods at 730 and 1460)
+    normalized_df = compute_ngl_normalized(calendar_df)
+    norm_pd = normalized_df.orderBy("NormalizedPeriod").toPandas()
+
+    assert len(norm_pd) == 2
+    # Period 1 differential equals first month
+    assert abs(norm_pd.loc[0, "GasProduction"] - 100.0) < 1e-6
+    # Period 2 differential equals second month (since exact 1460 cumulative)
+    assert abs(norm_pd.loc[1, "GasProduction"] - 80.0) < 1e-6
+
+
 def test_config_to_processing_integration():
     """Test integration from config loading to data processing."""
 

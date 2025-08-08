@@ -6,7 +6,6 @@ import pandas as pd
 import numpy as np
 import pytest
 from petrinex.forecast import (
-    prepare_well_data,
     forecast_well_production,
     forecast_multiple_wells,
     exponential_decline,
@@ -38,44 +37,36 @@ def sample_ngl_data():
             data.append(
                 {
                     "WellID": well_id,
-                    "ProductionMonth": date.strftime("%Y-%m"),
+                    "ProductionMonth": date,
+                    "DaysFromFirst": i * 30,  # Add DaysFromFirst column
                     "OilProduction": oil_prod,
                     "GasProduction": gas_prod,
                     "CondensateProduction": oil_prod * 0.1,
                     "WaterProduction": oil_prod * 0.2,
                     "ReportingFacilityName": f"Facility_{well_id}",
                     "OperatorName": "Test Operator",
+                    "ReportingFacilityID": f"FAC_{well_id}",
+                    "OperatorBAID": f"OP_{well_id}",
+                    "WellLicenseNumber": f"LIC_{well_id}",
+                    "Field": f"Field_{well_id}",
+                    "Pool": f"Pool_{well_id}",
+                    "Area": f"Area_{well_id}",
+                    "Hours": 720.0,
+                    "ResidueGasVolume": 0.0,
+                    "Energy": 0.0,
+                    "EthaneMixVolume": 0.0,
+                    "EthaneSpecVolume": 0.0,
+                    "PropaneMixVolume": 0.0,
+                    "PropaneSpecVolume": 0.0,
+                    "ButaneMixVolume": 0.0,
+                    "ButaneSpecVolume": 0.0,
+                    "PentaneMixVolume": 0.0,
+                    "PentaneSpecVolume": 0.0,
+                    "LiteMixVolume": 0.0,
                 }
             )
 
     return pd.DataFrame(data)
-
-
-def test_prepare_well_data(sample_ngl_data):
-    """Test well data preparation."""
-    result = prepare_well_data(sample_ngl_data, min_months=12)
-
-    # Should have both wells since they have 24 months each
-    assert result["WellID"].nunique() == 2
-
-    # Should have DaysFromFirst column
-    assert "DaysFromFirst" in result.columns
-
-    # Days should start from 0 for each well
-    for well_id in result["WellID"].unique():
-        well_data = result[result["WellID"] == well_id]
-        assert well_data["DaysFromFirst"].min() == 0
-
-
-def test_prepare_well_data_insufficient_data(sample_ngl_data):
-    """Test that wells with insufficient data are filtered out."""
-    # Filter to only 6 months of data for each well
-    short_data = sample_ngl_data.groupby("WellID").head(6).reset_index(drop=True)
-
-    result = prepare_well_data(short_data, min_months=12)
-
-    # Should have no wells since none have 12+ months
-    assert len(result) == 0
 
 
 def test_arps_curves():
@@ -133,8 +124,7 @@ def test_calculate_aic():
 
 def test_fit_arps_curve(sample_ngl_data):
     """Test ARPS curve fitting."""
-    prepared_data = prepare_well_data(sample_ngl_data, min_months=6)
-    well_data = prepared_data[prepared_data["WellID"] == "WELL001"]
+    well_data = sample_ngl_data[sample_ngl_data["WellID"] == "WELL001"]
 
     result = fit_arps_curve(well_data, "OilProduction", "auto")
 
@@ -149,8 +139,7 @@ def test_fit_arps_curve(sample_ngl_data):
 
 def test_forecast_well_production(sample_ngl_data):
     """Test well production forecasting."""
-    prepared_data = prepare_well_data(sample_ngl_data, min_months=6)
-    well_data = prepared_data[prepared_data["WellID"] == "WELL001"]
+    well_data = sample_ngl_data[sample_ngl_data["WellID"] == "WELL001"]
 
     result = forecast_well_production(
         well_data, forecast_months=12, production_column="OilProduction"
@@ -175,10 +164,8 @@ def test_forecast_well_production(sample_ngl_data):
 
 def test_forecast_multiple_wells(sample_ngl_data):
     """Test forecasting multiple wells."""
-    prepared_data = prepare_well_data(sample_ngl_data, min_months=6)
-
     results = forecast_multiple_wells(
-        prepared_data,
+        sample_ngl_data,
         forecast_months=12,
         production_column="OilProduction",
         min_r_squared=0.0,  # Set low threshold for test data
@@ -232,10 +219,9 @@ def test_forecast_zero_production():
 
 def test_export_forecast_summary_table(sample_ngl_data):
     """Test exporting forecast summary as a table."""
-    prepared_data = prepare_well_data(sample_ngl_data, min_months=6)
 
     results = forecast_multiple_wells(
-        prepared_data,
+        sample_ngl_data,
         forecast_months=12,
         production_column="GasProduction",
         min_r_squared=0.0,  # Set low threshold for test data
@@ -265,10 +251,8 @@ def test_export_forecast_summary_table(sample_ngl_data):
 
 def test_export_forecasted_production_table(sample_ngl_data):
     """Test exporting forecasted production in same schema as input."""
-    prepared_data = prepare_well_data(sample_ngl_data, min_months=6)
-
     results = forecast_multiple_wells(
-        prepared_data,
+        sample_ngl_data,
         forecast_months=6,
         production_column="GasProduction",
         min_r_squared=0.0,
@@ -301,11 +285,10 @@ def test_export_forecasted_production_table(sample_ngl_data):
 
 def test_combine_historical_and_forecast(sample_ngl_data):
     """Test combining historical and forecast data."""
-    prepared_data = prepare_well_data(sample_ngl_data, min_months=6)
 
     # Get a small forecast
     results = forecast_multiple_wells(
-        prepared_data.head(50),
+        sample_ngl_data.head(50),
         forecast_months=3,
         production_column="GasProduction",
         min_r_squared=0.0,
@@ -314,7 +297,7 @@ def test_combine_historical_and_forecast(sample_ngl_data):
     if len(results) > 0:
         production_table = export_forecasted_production_table(results, "GasProduction")
         combined_table = combine_historical_and_forecast(
-            prepared_data.head(50), production_table, "GasProduction"
+            sample_ngl_data.head(50), production_table, "GasProduction"
         )
 
         # Check that both data types are present
@@ -340,22 +323,6 @@ def test_export_empty_forecasts():
         empty_forecasts, "GasProduction"
     )
     assert len(production_table) == 0
-
-
-def test_filter_wells_by_min_months_spark(spark_session, sample_ngl_data_with_time):
-    """Test Spark well filtering functionality."""
-    # Convert pandas to Spark DataFrame
-    spark_df = spark_session.createDataFrame(sample_ngl_data_with_time)
-
-    # Test filtering with minimum months
-    filtered_df = filter_wells_by_min_months(spark_df, min_months=12)
-
-    # Should have some wells with sufficient data
-    filtered_count = filtered_df.count()
-    original_count = spark_df.count()
-
-    assert filtered_count <= original_count
-    assert filtered_count > 0  # Should have at least some wells with 12+ months
 
 
 def test_forecast_spark_workflow_imports():
